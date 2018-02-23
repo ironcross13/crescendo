@@ -7,7 +7,7 @@
 #CATEGORY "46" "Crescendo" // Custom
 #DEFAULT_VOLATILE
 #ENABLE_DYNAMIC
-// #ENABLE_TRACE
+#ENABLE_TRACE
 
 
 // Constants
@@ -724,7 +724,7 @@ FUNCTION UpdateShareSource(INTEGER room)
     ELSE
     {
         Share_Source_Name_Is[share] = "Off";
-        Share_Source_Icon_Is[share] = 0;
+        Share_Source_Icon_Is[share] = 102;
         Share_Power_Is_On[share] = 0;
     }
 }
