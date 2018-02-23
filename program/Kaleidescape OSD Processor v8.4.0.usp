@@ -1,0 +1,3553 @@
+/*******************************************************************************************
+ * SIMPL+ Module Information
+ ******************************************************************************************/
+/*
+ * Programmer: Kaleidescape
+ * 
+ *  	(c) 2004-2014 Kaleidescape Inc. This Source Code is the intellectual 
+ * property of Kaleidescape, Inc. Kaleidescape grants authorized Dealers 
+ * and Partners the non-exclusive right to modify and/or compile and/or 
+ * compress the Source Code, and upload such modified and/or compiled 
+ * and/or compressed Source Code to control systems that control at least 
+ * one licensed Kaleidescape System. No right is granted to otherwise 
+ * copy, reproduce, modify, upload, download, transmit, or distribute the 
+ * Source Code, or derivative works, in any way. The Source Code, and 
+ * derivative works, are protected by copyright, trade secret, and other 
+ * intellectual property laws and by international treaties, which 
+ * provide rights and obligations in addition to the rights and 
+ * obligations set forth here.
+ * 
+ */
+
+/*******************************************************************************************
+ * Compiler Directives
+ ******************************************************************************************/
+#HINT "This processor is for use within the Kaleidescape OSD Module." 
+#CATEGORY "8" // Media Resource
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#PRINT_TO_TRACE
+#ENABLE_TRACE
+#ENABLE_DYNAMIC
+#DEFINE_CONSTANT LIBRARY_VERSION "2.1" //Kaleidescape library version.
+
+//Useful characters that we'll use in the parsing code
+#DEFINE_CONSTANT CR 0x0D		 	// Carriage return
+#DEFINE_CONSTANT LF 0x0A		 	// Linefeed
+#DEFINE_CONSTANT TAB 0x09		 	// Tab
+#DEFINE_CONSTANT BACKSLASH '/'   	// /
+#DEFINE_CONSTANT ESCSLASH  '\\'	 	// \
+#DEFINE_CONSTANT DOUBLE_QUOTE "\""	// "  
+
+#DEFINE_CONSTANT NULLSTRING ""
+#DEFINE_CONSTANT TPNULLSTRING " "
+
+#DEFINE_CONSTANT MAX_INT 65535
+
+#DEFINE_CONSTANT MAX_MESSAGE_LENGTH	2048	//Used to initialize various arrays
+#DEFINE_CONSTANT INPUT_BUFFER_LENGTH 8192	//8K
+#DEFINE_CONSTANT MAX_RESPONSE_ARGS  15		//Number or arguments to account for in the player 
+											//response
+#DEFINE_CONSTANT MAX_RESPONSE_ARG_LEN 200  	//Maximum length of a single argument
+
+#DEFINE_CONSTANT APPEND_TEXT_1 "\xFE\x01"	//Used to append text displayed on a TP, with a newline
+#DEFINE_CONSTANT APPEND_TEXT_2 "\xFE\x02"	//Same as 1, but without a newline
+											//Note these only work on TPS panels and later
+
+
+//Function to return the library version.
+STRING_FUNCTION getLibraryVersion()
+{
+	return(LIBRARY_VERSION);
+}
+
+// Function to determine if a given integer is an upper case letter
+INTEGER_FUNCTION isUpperLetter(INTEGER character)
+{
+	return (character >= 'A' && character <= 'Z');
+}
+
+// Function to determine if a given integer is an lower case letter
+INTEGER_FUNCTION isLowerLetter(INTEGER character)
+{
+	return (character >= 'a' && character <= 'z');
+}
+
+// Function to determine if a given integer is a valid letter
+INTEGER_FUNCTION isLetter(INTEGER character)
+{
+	return (isUpperLetter(character) || isLowerLetter(character));
+}
+
+// Function to determine if a given integer is a valid digit
+INTEGER_FUNCTION isDigit(INTEGER character)
+{
+    return (character >= '0' && character <='9');
+}
+
+// Function to determine if a given integer is a valid Hex digit
+INTEGER_FUNCTION isHex(INTEGER character)	
+{
+    return(  isDigit(character) || ( character >= 'A' && character <= 'F' )  );
+}
+
+// Function to determine if a given integer is a valid sequence number
+INTEGER_FUNCTION isSequence(INTEGER character)
+{
+    return( isDigit(character) || character = '!' || character = '?' );
+}
+
+// Function to convert a single char to upper
+INTEGER_FUNCTION toUpper(INTEGER character)
+{
+	if( isLowerLetter(character) ) return(character + 'A' - 'a');
+	return(character); //if not a lower case letter, return unchanged
+}
+
+// Function to convert a single char to lower
+INTEGER_FUNCTION toLower(INTEGER character)	
+{
+	if( isUpperLetter(character) ) return(character + 'a' - 'A');
+	return(character); //if not an upper case letter, return unchanged
+}
+
+// General purpose function to remove the right-most characters from a string
+STRING_FUNCTION shaveRightCharacter(STRING inputString, INTEGER numToRemove)
+{
+	if(len(inputString) > numToRemove) return(left(inputString, len(inputString) - numToRemove));
+	return(NULLSTRING);
+}
+
+
+STRING_FUNCTION getSymbolInstanceUMC()
+{
+	string UMC[50];
+	UMC = GetSymbolInstanceName();  //will return "S-?:S-3", and the :S-3 is noise (location of the symbol in the umc file
+	if( find(":", UMC) )
+		UMC = left(UMC, ( find(":", UMC) - 1 ) );
+	return(UMC);
+}
+
+// Function to convert a string to title caps
+STRING_FUNCTION toTitleCaps(STRING inputString)
+{
+	INTEGER loop;
+	INTEGER character;
+	INTEGER inWord;
+	STRING 	outputString[MAX_MESSAGE_LENGTH];
+	
+	inWord = OFF;
+	
+	for(loop = 1 to len(inputString)) //step through every character of inputString
+	{
+		character = byte(inputString, loop); //extract it
+		if(isLetter(character)) //check if it's a letter
+		{
+			if(inWord) //if we're already in a word
+			{
+				//set the letter to lower case
+				outputString = outputString + chr(toLower(character));
+			}
+			else //if we're not (beginning of the word)
+			{
+				//set the letter to upper case (beginning of word)
+				outputString=outputString+chr(toUpper(character));
+			}
+			inWord = ON;
+		}
+		else //if it's not a letter
+		{
+			outputString = outputString + chr(character); //just copy verbatum
+			inWord = OFF; //note that we're no longer in a word
+		}
+	}
+	return(outputString);
+}
+
+// Much less expensive way to append a char with title caps
+STRING_FUNCTION appendTitleCaps(STRING inputString, STRING appendString)
+{
+	INTEGER stringLength;
+	STRING 	outputString[MAX_MESSAGE_LENGTH];
+
+	stringLength = len(inputString);
+	
+	//if there is a previous char and the previous char is a letter...
+	if( stringLength > 0 &&	isLetter(byte(inputString, stringLength)) )
+	{
+		outputString = inputString + lower(appendString); //make new char lower case			
+	}
+	else //if no previous char, or previous is not a char
+	{
+		outputString = inputString + upper(appendString); //make new char upper case
+	}
+		
+	return(outputString);
+}
+
+// function to properly escape an arbritrary string
+STRING_FUNCTION escape(STRING inputString)
+{						
+	INTEGER loop;
+	INTEGER character;
+	STRING 	outputString[MAX_MESSAGE_LENGTH];
+	
+	for(loop = 1 to len(inputString)) //step through every character of inputString
+	{
+		character = byte(inputString, loop); //extract it
+		cSwitch(character) //examine it
+		{
+			case (':')		: 
+			case (BACKSLASH): 
+			//escape all of the above
+			case (ESCSLASH)	: outputString = outputString + chr(ESCSLASH);  
+			default			: outputString = outputString + chr(character); //append the character
+		}
+	}
+	return(outputString);
+}
+
+//function to substitute any char for any other
+STRING_FUNCTION substitute(STRING inputString, INTEGER characterToReplace, 
+							  STRING replacementString)
+{
+	INTEGER loop;
+	INTEGER character;
+	INTEGER inputLength;
+	INTEGER replacementLength;
+	INTEGER outputPosition;
+	STRING 	outputString[MAX_MESSAGE_LENGTH];
+	
+	outputString = NULLSTRING;
+	inputLength = len(inputString);
+	replacementLength = len(replacementString);
+	outputPosition = 1;
+	for(loop = 1 to inputLength) //step through every character of inputString
+	{
+		character = byte(inputString, loop); //extract it
+		switch(character) //examine it
+		{
+			case (characterToReplace):
+			{
+				setString(replacementString, outputPosition, outputString);
+				outputPosition = outputPosition + replacementLength;
+			}
+			default:
+			{
+				setString(chr(character), outputPosition, outputString);//append the character
+				outputPosition = outputPosition + 1;
+			}
+		}
+	}
+	return(outputString);	
+}
+
+// function to provide a space if the given string is null (for proper TP display)
+STRING_FUNCTION nullToSpace(STRING inputString)
+{
+	if(inputString != NULLSTRING) return (inputString); //if the string isn't null, just return it.
+	return(TPNULLSTRING); //otherwise, return a space
+}
+
+//This function is used to handle operations that require NAT.
+STRING_FUNCTION processNAT(STRING givenURL, STRING hostIP)
+{
+	STRING URI[500];
+	STRING host[50];
+	STRING junk[10];
+
+	URI = givenURL;
+
+	junk = remove("//", URI, 1); //remove the http://
+    host = remove("/", URI, 1); //pull out the host name   
+    
+    URI = "http://" + hostIP + "/" + URI;
+    
+    return(URI);
+}
+
+// This function turns an integer into a string with a properly pluraized label.  int=0 returns null.
+// assumes that the label can be pluralized by adding an "s" - will work well enough for our labels.
+STRING_FUNCTION itoLabel(INTEGER int, STRING label)
+{
+	STRING result[20];
+	switch(int)
+	{
+		case (0):	//none
+		{
+			result = NULLSTRING;
+		}
+		case (1):	//singular
+		{
+			makeString(result, "%d %s", int, label);
+		}
+		default:	//plural
+		{
+			makeString(result, "%d %ss", int, label);
+		}
+	}
+	return(result);
+}
+
+// This function creates a proper English text snippet for display
+STRING_FUNCTION makeTimeString(INTEGER hours, INTEGER minutes)
+{
+	STRING result[42];
+	STRING hourStr[20];
+	STRING minuteStr[20];
+	
+	hourStr = itoLabel(hours, "hour");
+	minuteStr = itoLabel(minutes, "minute");
+    
+    if( hours > 0 && minutes > 0 )	//if both hours and minutes 
+    {
+    	result = hourStr + " " + minuteStr;
+    }
+    else
+    {
+    	result = hourStr + minuteStr;		// return either hours or minutes or nothing
+    }
+    
+    return(result);
+}
+
+/*
+ * Error codes that may be returned by the messageError function
+ */
+#DEFINE_CONSTANT MESSAGE_GOOD							0
+#DEFINE_CONSTANT MESSAGEERROR_RESPONSE_TOO_SHORT		1
+#DEFINE_CONSTANT MESSAGEERROR_GARBLED_MESSAGE			2
+#DEFINE_CONSTANT MESSAGEERROR_SN_MESSAGE				3
+#DEFINE_CONSTANT MESSAGEERROR_BAD_CHECKSUM				4
+#DEFINE_CONSTANT MESSAGEERROR_BAD_ADDRESS				5
+#DEFINE_CONSTANT MESSAGEERROR_BAD_ZONE					6
+#DEFINE_CONSTANT MESSAGEERROR_BAD_SEQUENCE				7
+
+/*
+ * Making this a seperate function will improve the processing speed when debuggging is off
+ * (Crestron puts all declared string "constants" into temporary memory whether they're used or not)
+ * Also, this allows the recieve routine to not throw an error for something it may expect (SN message)
+ */
+FUNCTION printMessageError(STRING message, INTEGER errorCode)
+{
+	string instanceName[50];
+	
+	instanceName = getSymbolInstanceUMC();
+	
+	switch(errorCode)
+	{
+		case (MESSAGE_GOOD):
+			return;
+			
+		case (MESSAGEERROR_RESPONSE_TOO_SHORT):
+			print("Kaleidescape (%s):  Response too short.\n  message is: %s\n", instanceName, message);
+			
+		case (MESSAGEERROR_GARBLED_MESSAGE):
+			print("Kaleidescape (%s):  Received garbled message.\n    message is: %s\n",
+    			instanceName, message);		
+    			
+    	case (MESSAGEERROR_SN_MESSAGE):
+    		print("Kaleidescape (%s):  Serial Number device IDs are not supported.  Ignoring Address: %s\n", 
+    			instanceName, left(message,13));
+    		
+		case (MESSAGEERROR_BAD_CHECKSUM):
+			print("Kaleidescape (%s):  Bad checksum.\n", instanceName);
+		
+		case (MESSAGEERROR_BAD_ZONE):
+			print("Kaleidescape (%s): Ignoring message with zone ID %s\n", instanceName, message);	
+			
+		case (MESSAGEERROR_BAD_ADDRESS):		      
+			print("Kaleidescape (%s): Ignoring message with address %s\n", instanceName, message);
+
+		case (MESSAGEERROR_BAD_SEQUENCE):
+			print("Kaleidescape (%s): Ignoring message with sequence %s\n", instanceName, message);
+					
+		default:
+			print("Kaleidescape (%s):  Unknown parsing error %d", instanceName, errorCode);
+	}
+}
+
+/*
+ * This function verifies that the incoming message is for the specified device.
+ * Returns non-zero error code if invalid message, 0 for a good message
+ */
+
+INTEGER_FUNCTION messageTargetError(INTEGER messageDeviceId, INTEGER messageZoneId, INTEGER messageSequence,
+								INTEGER targetDeviceId, INTEGER targetZoneId, INTEGER targetSequence,
+								INTEGER directConnect, INTEGER debug)
+{
+    // Check that this response is from the device we want to talk to.
+   	if(messageDeviceId != targetDeviceId)
+   	{
+   		if(directConnect = OFF || (directConnect = ON && messageDeviceId != 1))
+   		{
+	    	if(debug) printMessageError(itoa(messageDeviceId), MESSAGEERROR_BAD_ADDRESS);
+	    	//print("Ignoring Address: %d   (My Address is %d.)\n", messageDeviceId, targetDeviceId);
+    		return(MESSAGEERROR_BAD_ADDRESS); //indicate that the message is not OK (not addressed to us)
+    	}
+    }	
+      
+    if(messageZoneId != targetZoneId && messageZoneId > 0)
+    {
+    	if(debug) printMessageError(itoa(messageZoneId), MESSAGEERROR_BAD_ZONE);
+    	//print("Ignoring Zone ID: %d   (My Zone ID is %d)\n", messageZoneId, targetZoneId);
+		return(MESSAGEERROR_BAD_ZONE);
+    }    
+   		   		    
+    if(messageSequence != '!' && messageSequence != '?') //if the message sequence is a digit
+    {
+    	if(messageSequence - '0' != targetSequence) //if the sequence doesn't match
+    	{
+    		if(debug)
+    		{     
+    			printMessageError(chr(messageSequence), MESSAGEERROR_BAD_SEQUENCE);
+    			//print("Bad Sequence: %c  Looking for: %d\n", messageSequence, targetSequence);
+    		}
+    		return(MESSAGEERROR_BAD_SEQUENCE);
+    	}
+    }
+	
+	return(MESSAGE_GOOD);
+}
+
+/*
+ * This function verifies that the incoming message is for the specified device.  Kept for backwards compatability.
+ * Returns 0 if invalid message, 1 otherwise
+ */
+INTEGER_FUNCTION isTargetMessage(INTEGER messageDeviceId, INTEGER messageZoneId, INTEGER messageSequence,
+								INTEGER targetDeviceId, INTEGER targetZoneId, INTEGER targetSequence,
+								INTEGER directConnect, INTEGER debug)
+{		         
+    return(!messageTargetError(messageDeviceId, messageZoneId, messageSequence, targetDeviceId, targetZoneId, targetSequence, directConnect, debug));
+}
+
+
+/*
+ * Determine if there's any problems with this message, returns an error code if not valid, otherwise returns 0
+ * used by the parseMessage function
+ * Returns 0 if invalid message, 1 otherwise
+ *
+ * If we're using the OSD, the deviceZoneId should be 0.
+ */
+INTEGER_FUNCTION messageError(STRING message, BYREF INTEGER messageDeviceId, BYREF INTEGER messageZoneId, 
+								BYREF INTEGER messageSequence, INTEGER messageEnd)								
+{
+	INTEGER calculatedChecksum;
+	INTEGER responseChecksum;
+	INTEGER index;
+	INTEGER segmentDelimiter;
+	
+	/*
+     * The shortest response is "01/1/000:" (binary delimited), so if we have something
+     * shorter than that, then we can just ignore it since we know it's
+     * corrupted.
+     */
+    if (messageEnd < 9)
+    {
+        return(MESSAGEERROR_RESPONSE_TOO_SHORT);
+    }
+    
+    /*
+     * If using serial number device ID messages, the message will be longer
+     * #00000000FFFF/1/000:/xx
+     */
+    if (byte(message, 1) = '#' && messageEnd < 22) //shortest len for a sn device ID type message
+    {
+        return(MESSAGEERROR_RESPONSE_TOO_SHORT);    	
+    }
+    
+    /*
+     * Determine the message format - binary or printable
+     * The byte \x02 delimits fields in binary mode, and checksums aren't used
+     */
+    if (byte(message, messageEnd) = 2)
+    {
+    	segmentDelimiter = 1;
+    }
+    else	//if not in binary mode, then it's a printable message
+    {
+    	segmentDelimiter = BACKSLASH;
+    }
+    
+
+	//If using serial number with a zone, Message format should be: #00000000FFFF.01/1/
+    if (byte(message, 1) = '#' && byte(message, 14) = '.') //device ID with zone
+    {
+    	if(!isHex(byte(message, 2)) 					||
+    	   !isHex(byte(message, 3)) 					||
+    	   !isHex(byte(message, 4)) 					||
+    	   !isHex(byte(message, 5)) 					||
+    	   !isHex(byte(message, 6)) 					||
+    	   !isHex(byte(message, 7)) 					||
+    	   !isHex(byte(message, 8)) 					||
+    	   !isHex(byte(message, 9)) 					||
+    	   !isHex(byte(message, 10)) 					||
+    	   !isHex(byte(message, 11)) 					||
+    	   !isHex(byte(message, 12)) 					||
+    	   !isHex(byte(message, 13)) 					||
+    	   !isDigit(byte(message, 15)) 					||
+    	   !isDigit(byte(message, 16)) 					||
+    	   byte(message, 17) != segmentDelimiter		||
+    	   !isSequence(byte(message, 18)) 				||
+    	   byte(message, 19) != segmentDelimiter		)
+        {           
+        	return(MESSAGEERROR_GARBLED_MESSAGE);
+        }
+        
+        messageDeviceId = 0;
+        messageZoneId = atoi(mid(message, 15, 2));
+        
+        //This message has a serial number header, not handled by this code.
+        return(MESSAGEERROR_SN_MESSAGE);
+    }
+    //If using serial number without a zone, message format should be: #00000000FFFF/1/
+    else if (byte(message,1) = '#')
+    {
+    	if(!isHex(byte(message, 2)) 					||
+    	   !isHex(byte(message, 3)) 					||
+    	   !isHex(byte(message, 4)) 					||
+    	   !isHex(byte(message, 5)) 					||
+    	   !isHex(byte(message, 6)) 					||
+    	   !isHex(byte(message, 7)) 					||
+    	   !isHex(byte(message, 8)) 					||
+    	   !isHex(byte(message, 9)) 					||
+    	   !isHex(byte(message, 10)) 					||
+    	   !isHex(byte(message, 11)) 					||
+    	   !isHex(byte(message, 12)) 					||
+    	   !isHex(byte(message, 13)) 					||
+    	   byte(message, 14) != segmentDelimiter 		||
+    	   !isSequence(byte(message, 15)) 				||
+    	   byte(message, 16) != segmentDelimiter		)
+        {          
+        	return(MESSAGEERROR_GARBLED_MESSAGE);
+        }
+        
+        messageDeviceId = 0;
+        messageZoneId = 0;
+        
+        //This message has a serial number header, not handled by this code.
+        return(MESSAGEERROR_SN_MESSAGE);
+    }
+    //If using a zone ID, message format should be 01.01/1/
+	else if (byte(message,3) = '.') //contains a zone ID
+	{
+    	if(!isDigit(byte(message, 1)) 					||
+    	   !isDigit(byte(message, 2)) 					||
+    	   !isDigit(byte(message, 4)) 					||
+    	   !isDigit(byte(message, 5)) 					||
+    	   byte(message, 6) != segmentDelimiter 		||
+    	   !isSequence(byte(message, 7)) 				||
+    	   byte(message, 8) != segmentDelimiter 		)
+        {           
+        	return(MESSAGEERROR_GARBLED_MESSAGE);     
+        }    	
+
+	    messageDeviceId = atoi(left(message, 2));
+   		messageZoneId  = atoi(mid(message, 4, 2));
+   		messageSequence = byte(message,7);
+   	}
+	//If using a CPDID only, message format should be 01/1/
+	else
+	{
+		if(!isDigit(byte(message, 1)) 					||
+    	   !isDigit(byte(message, 2)) 					||
+    	   byte(message, 3) != segmentDelimiter			||
+    	   !isSequence(byte(message, 4)) 				||
+    	   byte(message, 5) != segmentDelimiter			)
+		{           
+        	return(MESSAGEERROR_GARBLED_MESSAGE);        	
+        }
+	    messageDeviceId = atoi(left(message, 2));
+	    messageSequence = byte(message, 4);
+	    messageZoneId  = 0;
+    }
+    
+    if(segmentDelimiter = BACKSLASH)	   // if using printable delimiters, calculate the checksum and verify it.
+    {
+	    calculatedChecksum = 0;
+	    for(index = 1 to (messageEnd - 2) ) // skip last two characters, that's the checksum itself.
+	    {
+	        calculatedChecksum = (calculatedChecksum + byte(message, index)) mod 100;
+	    }
+	    
+	    responseChecksum = atoi(right(message, len(message) - messageEnd + 2));
+	    if (calculatedChecksum != responseChecksum)
+	    {
+	        return(MESSAGEERROR_BAD_CHECKSUM);
+	    }
+	}
+    return(MESSAGE_GOOD);   //no error
+}
+
+INTEGER_FUNCTION checkMessage(STRING message, INTEGER deviceId, INTEGER deviceZoneId, 
+								INTEGER sequenceSent, INTEGER messageEnd, INTEGER directConnect, INTEGER debug)
+{
+	INTEGER messageDeviceId;
+	INTEGER messageZoneId;
+	INTEGER messageSequence;
+	INTEGER messageErrorCode;
+	
+	messageErrorCode =  messageError(message, messageDeviceId, messageZoneId, messageSequence, messageEnd);
+	if(debug) printMessageError(message, messageErrorCode);
+    
+    if(messageErrorCode = MESSAGE_GOOD)
+    	return(messageTargetError(messageDeviceId, messageZoneId, messageSequence,
+								deviceId, deviceZoneId, sequenceSent,
+								directConnect, debug));
+	else
+		return(messageErrorCode); 
+	 /*
+	if(validateMessage(message, messageDeviceId, messageZoneId, messageSequence, 
+					   messageEnd, playerID, debug))
+	{
+		return (isTargetMessage(messageDeviceId, messageZoneId, messageSequence,
+								deviceId, deviceZoneId, sequenceSent,
+								directConnect, debug));
+	}
+	else
+	{
+		return(0);
+	}   */
+}
+
+								
+/*
+ * Validate that the message is valid.  Provided for backwards compatability; updated functions should use messageError
+ * used by the parseMessage function
+ * Returns 0 if invalid message, 1 otherwise
+ *
+ * If we're using the OSD, the deviceZoneId should be 0.
+ */
+INTEGER_FUNCTION validateMessage(STRING message, BYREF INTEGER messageDeviceId, BYREF INTEGER messageZoneId, 
+								BYREF INTEGER messageSequence, INTEGER messageEnd, INTEGER playerID, 
+								INTEGER debug)
+{
+	INTEGER errorCode;
+	
+	errorCode = messageError(message, messageDeviceId, messageZoneId, messageSequence, messageEnd);
+	
+	if(!errorCode) return(1);	//no error
+	
+	if(debug) printMessageError(message, errorCode);
+	return (0);
+}
+
+//Provided for backwards compatibility.
+INTEGER_FUNCTION isValidMessage(STRING message, INTEGER deviceId, INTEGER deviceZoneId, 
+								INTEGER sequenceSent, INTEGER messageEnd, INTEGER playerID, 
+								INTEGER directConnect, INTEGER debug)
+{
+	INTEGER messageDeviceId;
+	INTEGER messageZoneId;
+	INTEGER messageSequence;
+	
+	if(validateMessage(message, messageDeviceId, messageZoneId, messageSequence, 
+					   messageEnd, playerID, debug))
+	{
+		return (isTargetMessage(messageDeviceId, messageZoneId, messageSequence,
+								deviceId, deviceZoneId, sequenceSent,
+								directConnect, debug));
+	}
+	else
+	{
+		return(0);
+	}
+}								
+
+//Parses the arguments used by parseMessage() and parseInit2Message() in printable delimiter format
+FUNCTION getNArgumentsPrintable(STRING arguments[], BYREF INTEGER numArgs, 
+					   INTEGER newTotalArgs, STRING message, 
+					   BYREF INTEGER messagePosition, BYREF INTEGER messageEnd)
+{
+	INTEGER	character;
+	INTEGER escaped;
+	INTEGER argumentLength;
+		             
+	//Initialize our variables
+	escaped = 0;
+	argumentLength = 0;
+	
+	while (messagePosition <= messageEnd && numArgs < newTotalArgs)
+	{        	
+        //get the character being examined 
+        character = byte(message, messagePosition);
+        messagePosition = messagePosition + 1;
+        
+        if (escaped = 1)
+        {
+        	// The previous character was a backslash, treat this character specially.
+            switch (character)
+            {
+                case ('d'):
+                {
+                    // The following three digits make up the character.                    
+                    character = (byte(message, messagePosition) - '0') * 100;
+                    character = character + (byte(message, messagePosition + 1) - '0') * 10;
+                    character = character + (byte(message, messagePosition + 2) - '0');
+                    messagePosition = messagePosition + 3;
+                }
+                case ('t'):
+                {
+                    character = TAB;
+                }
+                case ('n'):
+                {
+                    character = LF;
+                }
+                case ('r'):
+                {
+                    character = CR;
+                }
+                default:
+                {
+                    // All other characters are simply themselves, nothing to do here.
+                }
+            }
+            if(argumentLength = 0) arguments[numArgs] = NULLSTRING; //Clear the argument.
+            
+            // Append character to the response                        
+            if(argumentLength < MAX_RESPONSE_ARG_LEN)
+            {
+            	setString(chr(character), argumentLength + 1, arguments[numArgs]);            	
+            	argumentLength = argumentLength + 1;
+            }
+
+            // The escape only applies to the next character.  After that we're back to normal.
+            escaped = 0;
+        }
+        else  // here if escaped is 0
+        {
+            switch (character)
+            {
+            	case (ESCSLASH): // Treat the next character specially.
+            	{                    
+                    escaped = 1;
+                }
+                case (':'): // Colons separate arguments, so prep the next argument
+                {
+                	numArgs = numArgs + 1;
+                	argumentLength = 0;
+                }
+                default:
+                {
+                	if(argumentLength = 0) arguments[numArgs] = NULLSTRING; //Clear the argument.
+                	
+                    // Normal character, append it.
+    		        if(argumentLength < MAX_RESPONSE_ARG_LEN)
+    		        {
+    		        	setString(chr(character), argumentLength + 1, arguments[numArgs]);
+    		        	argumentLength = argumentLength + 1;
+    		        }
+                }
+            }
+        }
+    }
+}
+
+
+//Parses the arguments used by parseMessage() and parseInit2Message() in binary delimiter format
+FUNCTION getNArgumentsBinary(STRING arguments[], BYREF INTEGER numArgs, 
+					   INTEGER newTotalArgs, STRING message, 
+					   BYREF INTEGER messagePosition, BYREF INTEGER messageEnd)
+{
+	INTEGER	delimiterPosition;
+	INTEGER argLength;
+	
+	while (messagePosition <= messageEnd && numArgs < newTotalArgs)
+	{
+		delimiterPosition = find("\x02", message, messagePosition);
+		
+		//if no delimiter is found, move the position to the end and quit the loop
+		if(delimiterPosition = 0)
+		{
+			messagePosition = messageEnd + 1;	
+			break;
+		}
+		
+		argLength = delimiterPosition - messagePosition;
+		if (argLength >= MAX_RESPONSE_ARG_LEN) argLength = MAX_RESPONSE_ARG_LEN;
+		
+		arguments[numArgs] = mid( message, messagePosition, argLength );
+		
+		numArgs = numArgs + 1;
+		messagePosition = delimiterPosition + 1;
+		}
+}
+
+//Parses the arguments used by parseMessage() and parseInit2Message()
+FUNCTION getNArguments(STRING arguments[], BYREF INTEGER numArgs, 
+					   INTEGER newTotalArgs, STRING message, 
+					   BYREF INTEGER messagePosition, BYREF INTEGER messageEnd)
+{   
+	integer loop;
+	if(byte(message,messageEnd) = 2)	//if the message is terminated with a binary delimiter
+	{
+		getNArgumentsBinary(arguments, numArgs, newTotalArgs, message, messagePosition, messageEnd);
+	}
+	else		//otherwise, assume it's in the printable delimiter format
+	{
+		getNArgumentsPrintable(arguments, numArgs, newTotalArgs, message, messagePosition, messageEnd);
+	}
+	
+	if(numArgs < newTotalArgs) //may happen if requested more args than available in the message
+	{                              
+		//step through all remaining args expected and clear
+		for(loop = numArgs to newTotalArgs)   
+		{
+			arguments[loop] = NULLSTRING;
+		}
+	}
+}
+
+// Decode and display the error code & message
+FUNCTION printPlayerError(INTEGER errorCode, STRING details, INTEGER playerId)
+{
+	string description[50];
+	string instanceName[50];
+	
+	instanceName = getSymbolInstanceUMC();
+	
+	switch(errorCode)  {
+		case(1):
+		{
+			description =  "Message too long";
+		}
+		case(2):
+		{
+			description =  "Message contains invalid character";
+		}
+		case(3):
+		{
+			description =  "Checksum error";
+		}
+		case(4):
+		{
+			description =  "Invalid device or device is offline";
+		}
+		case(5):
+		{
+			description =  "Device unavailable";
+		}
+		case(10):
+		{
+			description =  "Invalid request";
+		}
+		case(11):
+		{
+			description =  "Invalid number of parameters";
+		}
+		case(12):
+		{
+			description =  "Invalid parameter";
+		}
+		case(13):
+		{
+			description =  "Device identifier conflict";
+		}
+		case(14):
+		{
+			description =  "Invalid sequence number";
+		}
+		case(15):
+		{
+			description =  "Disallowed due to parental control";
+		}
+		case(16):
+		{
+			description =  "Invalid passcode";
+		}
+		case(17):
+		{
+			description =  "Invalid content handle";
+		}
+		case(20):
+		{
+			description =  "Command not processed";
+		}
+		case(999):
+		{
+			description =  "Undetermined error";
+		}
+		default:
+		{
+			description =  "Unknown error.";
+		}
+	}
+	
+	//send error text to console
+	print("Kaleidescape (%s):  K device responded with error %03d (%s)  %s\n", 
+		instanceName, errorCode, description, details);
+}      
+
+// Decrypt the device type, and ensure that the device is a valid one that can be controlled
+INTEGER_FUNCTION checkDeviceType(INTEGER deviceType, INTEGER playerId)
+{
+	STRING typeText[30];
+	STRING UMCName[50];
+	
+	switch(deviceType)	{
+		case(1):
+		{
+			typeText = "a Server";
+		}
+		
+		case(2):
+		{
+			typeText = "a Player";
+			return(1); //halt execution of this function with a success result
+		}
+		
+		case(3):
+		{
+			typeText = "a Bulk Loader";
+		}
+		
+		case(5):
+		{
+			typeText = "a DVD Reader";
+		}
+		
+		case(7):
+		{
+			typeText = NULLSTRING;
+			return(1); //halt execution of this function with a success result
+		}
+		
+		case(8):
+		{
+			typeText = "a Music Player";
+			return(1); //halt execution of this function with a success result
+		}
+		
+		default:
+		{
+			typeText = "an unknown device";
+		}
+	}
+	
+	//if control falls here, we are not talking to a player.
+	UMCName = getSymbolInstanceUMC();
+	print("\nKaleidescape (%s) is controlling %s, not a Player.\n", UMCName, typeText);
+	print("The Kaleidescape module only controls a Kaleidescape player.\n\n");
+	return(0); //indicate failure
+} 
+
+FUNCTION refactorConnectionSettings(INTEGER statedPlayerID, STRING playerSN, BYREF INTEGER playerID, STRING connectedDeviceSN, INTEGER connectedDeviceID, BYREF INTEGER directConnect, INTEGER debug)
+{
+	STRING UMCName[50];
+	
+	//if the serial number of the controlled player is the same as the connected dev
+	if(playerSN = connectedDeviceSN)
+	{
+		directConnect = ON; //we are directly connected
+	}
+	else
+	{
+		directConnect = OFF; //otherwise, we are not
+	}
+
+		
+	if(statedPlayerID = 1) //if the given player id is 1 (implying a direct connection)
+	{
+		//then use the ID of the connected device, no matter what it is
+		playerId = connectedDeviceID;
+		if(playerId = 0) playerId = 1;
+		directConnect = ON;
+	}
+		
+	/*
+	 * This solves problems where the installer direct connects the player
+	 * but the player's ID is actually something other than 01.
+	 */
+	if(debug)
+	{
+		UMCName = getSymbolInstanceUMC();			
+		print("K module %s refactored interface.\n", UMCName);
+		print("          Player SN = %s\n", playerSN);
+		print("Connected Device SN = %s\n", connectedDeviceSN);
+		print("Direct connect = %d\n\n", directConnect);
+		print("Stated ID = %u, Connected ID = %u, Player ID = %u.\n\n",
+			statedPlayerID, connectedDeviceID, playerID);
+	}
+	
+}
+
+
+INTEGER_FUNCTION validateDevice(STRING moduleName, INTEGER CPDID, STRING deviceName, INTEGER numVidZones, INTEGER numAudZones, INTEGER myZone)
+{
+	STRING errorText[255];
+	string instanceName[50];
+	
+	instanceName = getSymbolInstanceUMC();
+	if(deviceName = NULLSTRING) deviceName = "device";
+	
+	if(myZone > 0)		//this will be true if myZone is a music zone
+	{
+		if(myZone <= numAudZones)
+			return(1);
+			
+	    if(numAudZones = 0)
+	    {
+	    	makeString(errorText, "Kaleidescape (%s) Config ERROR! %s is set to control CPDID %02d, zone %02d; a %s with no audio zones.", instanceName, moduleName, CPDID, myZone, deviceName);
+		}
+	    else
+	    {
+	    	makeString(errorText, "Kaleidescape (%s) Config ERROR! %s is set to control CPDID %02d, zone %02d; a %s with only %d audio zone(s).", instanceName, moduleName, CPDID, myZone, deviceName, numAudZones);
+	    }
+	}
+	else
+	{
+		if(numVidZones > 0)
+			return(1);
+			
+    	makeString(errorText, "Kaleidescape (%s) Config ERROR! %s is set to control CPDID %02d; a %s which has no video zones.", instanceName, moduleName, CPDID, deviceName);			
+	}
+	
+	GenerateUserError("%s", errorText);
+	Print("\n\n%s\n\n", errorText);
+	
+	return(0);
+}
+
+/*
+ * The following functions manage the connection state
+ */
+#DEFINE_CONSTANT MAX_CONNECTION_COMMANDS 5
+ 
+//different states
+#DEFINE_CONSTANT STATE_PORT_CLOSED		0		//port is closed
+#DEFINE_CONSTANT STATE_PORT_OPENED		1		//port is open, no traffic yet (or not traffic)
+#DEFINE_CONSTANT STATE_K_CONNECTION		2		//port is returning valid K responses, but not sending traffic to device
+#DEFINE_CONSTANT STATE_PASSING_TRAFFIC	3		//port is passing traffic to connected devices, but our device is offline
+#DEFINE_CONSTANT STATE_DEVICE_ONLINE	4		//device is online and communicating normally
+#DEFINE_CONSTANT STATE_DEVICE_ON		5		//device is on
+#DEFINE_CONSTANT STATE_CONFIG_VALID		6		//the configuration is good (proper zones, etc.)
+#DEFINE_CONSTANT STATE_UNDEF			999
+
+#DEFINE_CONSTANT POWER_OFF				0
+#DEFINE_CONSTANT POWER_ON				1
+#DEFINE_CONSTANT POWER_UNKNOWN			254
+
+//various reponses
+#DEFINE_CONSTANT RESPONSE_NO_ACTION		0
+#DEFINE_CONSTANT RESPONSE_SEND_COMMAND	1
+#DEFINE_CONSTANT RESPONSE_DIRECT_SEND	2
+#DEFINE_CONSTANT RESPONSE_INITIALIZE	3
+#DEFINE_CONSTANT RESPONSE_CLEAR_INIT	4
+#DEFINE_CONSTANT RESPONSE_INIT_CONN		5
+#DEFINE_CONSTANT RESPONSE_POWERED_OFF	6
+
+//various connection state events
+#DEFINE_CONSTANT EVENT_VALID_MESSAGE 	1		//when a valid K message is received
+#DEFINE_CONSTANT EVENT_DEVICE_INFO 		2		//when we've received a dev info from the target device
+#DEFINE_CONSTANT EVENT_POWER_STATE_ON	3		//received DEVICE_POWER_STATE, and this zone is on
+#DEFINE_CONSTANT EVENT_POWER_STATE_OFF	4		//received DEVICE_POWER_STATE, and this zone is off
+#DEFINE_CONSTANT EVENT_VALIDATED_CONFIG 5		//the configuration is valid
+#DEFINE_CONSTANT EVENT_01_DEVICE_INFO	10		//received dev info from device 01
+#DEFINE_CONSTANT EVENT_01_POWER_STATE_OFF 11	//received DEVICE_POWER_STATE, and 01 is on
+#DEFINE_CONSTANT EVENT_01_POWER_STATE_ON  12	//received DEVICE_POWER_STATE, and 01 is off
+#DEFINE_CONSTANT EVENT_01_BANG_020		13		//received 01/!/020:
+#DEFINE_CONSTANT EVENT_DEVICE_ONLINE	14		//called in response to finding our CPDID in AVAILABLE_DEVICES
+#DEFINE_CONSTANT EVENT_DEVICE_OFFLINE	15		//called in response to not finding our CPDID in AVAILABLE_DEVICES
+#DEFINE_CONSTANT EVENT_PLAYER_RESTART	16		//received PLAYER_RESTART
+
+#DEFINE_CONSTANT EVENT_MODULE_START		100		//startup
+#DEFINE_CONSTANT EVENT_PORT_OPEN 		101		//the port is open
+#DEFINE_CONSTANT EVENT_PORT_CLOSED 		102		//the port is closed
+#DEFINE_CONSTANT EVENT_SEND_TIMEOUT		103		//a send message got no reponse
+#DEFINE_CONSTANT EVENT_MIDNIGHT			104		//midnight has passed
+#DEFINE_CONSTANT EVENT_10_SECONDS		105		//triggers every 10 seconds
+#DEFINE_CONSTANT EVERY_30_SECONDS		106
+#DEFINE_CONSTANT EVENT_POWER_ON_PUSH	107		//power on was pressed on the module
+#DEFINE_CONSTANT EVENT_POWER_ON_RELEASE 108		//power on was released on the module
+#DEFINE_CONSTANT EVENT_POWER_OFF_PUSH	109		//power off was pressed on the module
+
+#DEFINE_CONSTANT EVENT_ERROR_OFFSET		1000
+
+ 
+INTEGER_FUNCTION connectionHandler(INTEGER stateEvent, BYREF INTEGER state, BYREF STRING commands[], BYREF INTEGER commandCount, BYREF INTEGER powerState, BYREF INTEGER powerStateStatus, BYREF STRING moduleDescription, INTEGER directConnection, INTEGER debug)
+{
+	INTEGER newState;
+	INTEGER oldState;
+	oldState = state;
+	newState = STATE_UNDEF;
+	
+ 	if(debug) print("connectionHandler called with state event %d.  State=%d, Power state=%d\n", stateEvent, state, powerState);
+ 	switch(stateEvent)
+ 	{
+ 		//connection step 2
+ 		case (EVENT_VALID_MESSAGE):
+ 		{
+ 			//This first event must normally exit fast as it's checked on every incoming message
+ 			if(state >= STATE_K_CONNECTION) 
+ 				return(RESPONSE_NO_ACTION);	//if we're already at this state, do nothing
+ 			
+ 			newState = STATE_K_CONNECTION;
+ 			
+ 			if(debug) print("ConnectionHandler - Connection step 2\n");
+ 		}
+
+		case (EVENT_10_SECONDS):
+		{
+			//this is a failsafe event for when a 232 connection is set up without any other indication
+			//will also keep track of the power status
+			if(state = STATE_PORT_OPENED)
+				newState = STATE_PORT_OPENED;
+	
+			//if the device in online but the power state is unknown, check it			
+			if( state <> STATE_UNDEF && state >= STATE_DEVICE_ONLINE && powerState = POWER_UNKNOWN )
+			{
+	 			makeString(commands[1], "GET_DEVICE_POWER_STATE:");
+	 			commandCount = 1;
+	 			return(RESPONSE_SEND_COMMAND);
+			}
+		}
+ 		
+ 		//connection step 0 - clear any states
+ 		case (EVENT_MODULE_START):
+ 		{
+ 			newState = STATE_PORT_CLOSED;
+ 		}
+ 		
+		//connection step 1  - check if the connected device is on.  Might be called twice during startup.		
+ 		case (EVENT_PORT_OPEN):
+ 		{
+ 			if(state < STATE_PORT_OPENED)
+	 			newState = STATE_PORT_OPENED;
+ 		}
+ 		
+ 		case (EVENT_PORT_CLOSED):
+ 		{
+ 			newState = STATE_PORT_CLOSED;
+ 		}
+
+ 		case (EVENT_PLAYER_RESTART):
+ 		{
+ 			newState = STATE_K_CONNECTION;
+ 		}
+ 		
+ 		
+ 		//connection step 3
+ 		case (EVENT_01_DEVICE_INFO):
+ 		{
+ 			if(state < STATE_PASSING_TRAFFIC)
+	 			newState = STATE_PASSING_TRAFFIC;
+ 		}
+        
+        //connection step 4
+ 		case (EVENT_DEVICE_INFO):
+ 		{
+ 			if(state < STATE_DEVICE_ONLINE)
+	 			newState = STATE_DEVICE_ONLINE;
+ 		} 		
+ 		
+ 		case (EVENT_DEVICE_ONLINE):
+ 		{
+ 			if(state < STATE_DEVICE_ONLINE)
+	 			newState = STATE_DEVICE_ONLINE;
+ 		}
+ 		
+ 		//connection step 5
+ 		case (EVENT_POWER_STATE_ON):
+ 		{
+ 			if(state < STATE_DEVICE_ON)
+				newState = STATE_DEVICE_ON;	//we're online
+			else
+	 			powerState = POWER_ON;
+ 		}
+ 		
+ 		case (EVENT_POWER_STATE_OFF):
+ 		{
+ 			powerState = POWER_OFF;			//we're off 
+ 			
+ 			if(state != STATE_DEVICE_ONLINE)			
+	 			newState = STATE_DEVICE_ONLINE;	//we're online
+ 		}
+ 		
+ 		//connection step 7
+ 		case (EVENT_VALIDATED_CONFIG):
+ 		{
+ 			if(state < STATE_CONFIG_VALID)
+	 			newState = STATE_CONFIG_VALID;
+ 		}
+ 		
+ 		case (EVENT_01_POWER_STATE_OFF):
+ 		{
+ 			if(state < STATE_K_CONNECTION)
+ 			{
+ 				newState = STATE_K_CONNECTION;
+ 			}
+ 			if(directConnection)
+ 			{
+ 				powerState = POWER_OFF;			//we're powered off
+ 			}
+ 			
+ 		}
+ 		
+ 		case (EVENT_01_POWER_STATE_ON):
+ 		{
+ 			if(state < STATE_K_CONNECTION)
+ 			{
+ 				newState = STATE_K_CONNECTION;
+ 			}
+ 			if(directConnection)
+ 			{
+ 				powerState = POWER_ON;			//but powered on
+			}
+ 		}
+ 		
+ 		//we should always at least receive error 004 or 020.  If not, something is not good
+ 		case (EVENT_SEND_TIMEOUT):
+ 		{
+ 			if(state > STATE_PORT_OPENED)
+				newState = STATE_PORT_OPENED;
+ 		}
+ 		
+ 		//received the "I can't pass traffic" error.  Port is open but not passing traffic
+ 		case (EVENT_01_BANG_020):
+ 		{
+ 			if(directConnection)		//if we're directly connected
+ 			{
+ 				if(state != STATE_DEVICE_ONLINE)
+	 				newState = STATE_DEVICE_ONLINE;	//we're online
+	 				
+ 				powerState = POWER_OFF;			//but powered off
+ 			}
+ 			else						//if we're not directly connected
+ 			{
+ 				if(state != STATE_K_CONNECTION)
+	 				newState = STATE_K_CONNECTION;
+ 			}
+ 		}
+ 		
+ 		//our device not found in available devices.  
+ 		case (EVENT_DEVICE_OFFLINE):
+ 		{
+ 			if(!directConnection)		//if we're not directly connected
+ 			{
+ 				if(state != STATE_PASSING_TRAFFIC)
+	 				newState = STATE_PASSING_TRAFFIC;
+ 			}
+ 		}
+ 		
+ 		
+ 		//received the "device offline" error.  Port is open and passing traffic, device offline
+ 		case (EVENT_ERROR_OFFSET + 004):
+ 		{
+ 			if(!directConnection)		//if we're not directly connected
+ 			{
+ 				if(state != STATE_PASSING_TRAFFIC)
+	 				newState = STATE_PASSING_TRAFFIC;
+ 			}
+ 		}
+ 		
+ 		//we'll only get this error if we're online but in standby
+ 		case (EVENT_ERROR_OFFSET + 020):
+ 		{
+ 			if(state > STATE_DEVICE_ONLINE)
+	 			newState = STATE_DEVICE_ONLINE;
+	 			
+ 			powerState = POWER_OFF;
+ 		}
+ 		
+ 		case (EVERY_30_SECONDS):
+ 		{
+ 			makeString(commands[5], "\n");	//send just a CR to make sure the port is still open
+ 			return(RESPONSE_DIRECT_SEND); 			
+ 		}
+ 		
+ 		case (EVENT_MIDNIGHT):
+ 		{
+ 			if(state = STATE_DEVICE_ONLINE)
+ 			{
+	 			makeString(commands[1], "SEND_TO_SYSLOG:INFORMATION:%s:", escape(moduleDescription));
+ 				commandCount = 1;
+ 				return(RESPONSE_SEND_COMMAND);
+ 			}
+ 			else return(RESPONSE_NO_ACTION);
+ 		}
+ 		
+ 		case (EVENT_POWER_ON_PUSH):
+ 		{
+ 			powerStateStatus = ON;
+ 			
+ 			//if the power is off, set the state to unknown in anticipation of an ON event
+ 			if(powerState = POWER_OFF)
+ 			{
+ 				powerState = POWER_UNKNOWN;
+ 				commandCount = 0;
+ 				return(RESPONSE_SEND_COMMAND);	//return with no commands to evaluate the power state
+ 			}
+ 			
+ 			//edge case for devices that improperly respond to power state changes
+ 			if(powerState = POWER_UNKNOWN && state >= STATE_DEVICE_ON)
+ 			{
+ 				powerState = POWER_ON;
+ 				commandCount = 0;
+ 				return(RESPONSE_SEND_COMMAND);	//return with no commands to evaluate the power state
+ 			}
+
+ 		}
+ 		
+ 		case (EVENT_POWER_ON_RELEASE):
+ 		{
+ 			powerStateStatus = OFF;
+ 		}
+ 		
+ 		case (EVENT_POWER_OFF_PUSH):
+ 		{	
+ 			powerStateStatus = OFF;
+ 			
+ 			//if the power is on, set the state to unknown in anticipation of an OFF event
+ 			if(powerState = POWER_ON)
+ 			{
+ 				powerState = POWER_UNKNOWN;
+ 				commandCount = 0;
+ 				return(RESPONSE_SEND_COMMAND);	//return with no commands to evaluate the power state
+ 			}
+ 		}
+ 		
+ 		default:
+ 		{
+ 			if(debug) print("Kaleidescape connectionHandler unknown event: %d\n", stateEvent);
+ 		}
+ 	}
+ 	
+ 	if(newState != STATE_UNDEF) 
+ 	{
+ 		//if the newState is higher, only go up by one step to not miss anything
+ 		if(newState > state) newState = state + 1;
+ 		state = newState;
+ 	}
+ 	
+ 	//take action depending on the new state
+ 	switch (newState)
+ 	{
+ 		case (STATE_PORT_CLOSED):
+ 		{
+ 			powerState = POWER_UNKNOWN;
+ 			return(RESPONSE_CLEAR_INIT);
+ 		}
+ 		case (STATE_PORT_OPENED): 
+ 		{
+ 			powerState = POWER_UNKNOWN;
+ 			makeString(commands[5], "01/0/GET_DEVICE_POWER_STATE:\n");
+ 			return(RESPONSE_DIRECT_SEND);
+ 		}
+ 		case (STATE_K_CONNECTION): 
+ 		{
+ 			if(!directConnection)
+ 				powerState = POWER_UNKNOWN;
+ 				
+ 			makeString(commands[5], "01/0/GET_DEVICE_INFO:\n"); 			
+ 			return(RESPONSE_DIRECT_SEND);
+ 		}
+ 		case (STATE_PASSING_TRAFFIC): 
+ 		{
+ 			if(!directConnection)
+ 				powerState = POWER_UNKNOWN;
+ 			
+ 			makeString(commands[1], "GET_DEVICE_INFO:");
+ 			commandCount = 1; 			
+ 			return(RESPONSE_INIT_CONN);
+ 		}
+ 		case (STATE_DEVICE_ONLINE): 
+ 		{
+ 			if(oldState < newState)	//only reinit the connection if it's a new connection
+ 			{
+	 			makeString(commands[1], "SEND_TO_SYSLOG:INFORMATION:%s:", escape(moduleDescription));
+	 			makeString(commands[2], "GET_DEVICE_POWER_STATE:");
+	 			commandCount = 2;
+	 			return(RESPONSE_SEND_COMMAND);
+	 		}
+	 		else
+	 		{
+	 			//indicate that the device has been powered off (was on)
+	 			return(RESPONSE_POWERED_OFF);
+	 		}
+	 	}
+ 		case (STATE_DEVICE_ON):
+ 		{
+ 			powerState = POWER_ON;
+			makeString(commands[1], "GET_DEVICE_TYPE_NAME:");
+			makeString(commands[2], "GET_NUM_ZONES:");
+			commandCount = 2;
+			return(RESPONSE_SEND_COMMAND);
+ 		}
+ 		case (STATE_CONFIG_VALID): 
+ 		{
+			return(RESPONSE_INITIALIZE);	//init 	
+ 		}
+ 	}
+ 	
+ 	//check the power state, status and connection state
+	if(powerStateStatus && powerState = POWER_OFF)
+	{
+	    if(state = STATE_DEVICE_ONLINE || ( directConnection && state >= STATE_K_CONNECTION ) )
+		{	
+			//turn on immediately
+			makeString(commands[1], "LEAVE_STANDBY:");
+			commandCount = 1;
+			
+			return(RESPONSE_SEND_COMMAND);
+		}
+	}
+	
+	return(RESPONSE_NO_ACTION);
+}
+
+// Small parser to get messages addressed to id 01, zone 0 (initialization messages)
+INTEGER_FUNCTION parse010MessageEvent(STRING message, INTEGER messageEnd, INTEGER playerID, INTEGER directConnect, BYREF STRING connectedDeviceSN, BYREF INTEGER connectedDeviceID, INTEGER debug)
+{
+	INTEGER numArgs;	// the number of args
+	INTEGER messagePosition;
+	STRING  args[MAX_RESPONSE_ARGS][MAX_RESPONSE_ARG_LEN];	// the args within the message
+	STRING  UMCName[50];
+	
+	if(debug) UMCName = getSymbolInstanceUMC();
+	if(debug) print("Kaleidescape (%s) Parsing 01/0 message\n", UMCName);
+
+	//ensure the message isn't garbled
+	if(!isValidMessage(message, 1, 0, 0, messageEnd, playerID, directConnect, debug)) return(OFF);
+	
+    //Initialize our parsing variables.
+    messagePosition = 6; //End after the header.
+    if(byte(message, messageEnd) != 2)	//if this doesn't end in a binary field delimiter
+    {
+	    messageEnd = MessageEnd - 3; //start after the checksum.
+	}
+    numArgs = 0;
+	//Parse the necessary arguments.
+	getNArguments(args, numArgs, 5, message, messagePosition, messageEnd);
+	
+  	if(args[1] = "DEVICE_INFO") //what type of device are we talking to
+  	{
+  		connectedDeviceSN = args[3];
+  		connectedDeviceID = atoi(args[4]);
+		if(debug) print("Kaleidescape (%s) Found DEVICE_INFO message.  args[3]=%s\n", UMCName, args[3]);
+		return(EVENT_01_DEVICE_INFO);
+  	}
+  	else if(args[1] = "DEVICE_POWER_STATE")
+  	{
+  		if(debug) print("Kaleidescape (%s) Found DEVICE_POWER_STATE.  args[2]=%s\n", UMCName, args[2]);
+  		if(atoi(args[2]) > 0)
+  			return(EVENT_01_POWER_STATE_ON);
+  		else
+  			return(EVENT_01_POWER_STATE_OFF);  			
+  	}
+  	
+  	return(EVENT_VALID_MESSAGE);
+}
+
+
+
+#DEFINE_CONSTANT XY_TIMEOUT 40	//in tenths of a second.  
+/* 
+ * If the XY coordinates fail with an error saying "timeout", 
+ * fix the Crestron bus or increase this number
+ */
+
+#DEFINE_CONSTANT SEQUENCE_ID 1
+#DEFINE_CONSTANT CONTENT_DETAIL_LENGTH 250
+#DEFINE_CONSTANT ZONE_ID_LENGTH 15
+                                       
+/*
+ * In some cases, the Kaleidescape server is separated from
+ * the control system by a router using NAT.  In these cases,
+ * the private IP address of the server is not the IP Address
+ * the Crestron panels must use to obtain cover art.
+ *
+ * In this case, an alternative address must be used to
+ * access cover art.  Enter that address here.  This can be
+ * a host name or an IP Address.
+ *
+ * NOTE: If your Crestron system and Kaleidescape server are
+ * on the same subnet without any NAT between them,
+ * DO NOT UNCOMMENT THE FOLLOWING CONSTANT DECLARATION.
+ */                                       
+//#DEFINE_CONSTANT SERVER_IP_ADDRESS "192.168.1.150"
+
+#HELP_BEGIN
+(c) 2004-2014 Kaleidescape Inc.  Please see legal notice below.
+
+Version 8.4.0
+Dated Mar 26, 2014
+
+This module has been created and supported by Kaleidescape Inc.
+This module is supported directly by Kaleidescape Inc.  Please
+direct all inquiries regarding this module to  Kaleidescape support
+at (650) 625-6160.  Crestron Inc. does not support this module itself.
+
+This processor is for use within the Kaleidescape OSD Module
+
+Inputs:
+Player_ID	Indicates the player this module should communicate with.
+
+Direct_Connect	Indicates if the player is directly connected (1) or 
+			player is being routed through another player (0).
+
+Rx$			String input received from the player.
+
+Command_To_Player	Sends an arbritrary command to the player.
+
+Outputs:
+Tx$			String output sent to the player.
+
+All other signal names are derived from the manual
+
+----------------------------------------------------------------------
+Debug mode can be activated by opening up the console and typing:
+> userprogcmd "K debug"
+
+It can subsequently be deactivated by typing:
+> userprogcmd "K debug off"
+----------------------------------------------------------------------
+
+LEGAL NOTICE
+    (c) 2004-2014 Kaleidescape Inc. This Source Code is the intellectual 
+property of Kaleidescape, Inc. Kaleidescape grants the non-exclusive 
+right to modify and/or compile and/or compress the Source Code, and 
+upload such modified and/or compiled and/or compressed Source Code 
+to control systems that control at least one licensed Kaleidescape 
+System. No right is granted to otherwise copy, reproduce, modify, 
+upload, download, transmit, or distribute the Source Code, or 
+derivative works, in any way. The Source Code, and derivative works, 
+are protected by copyright, trade secret, and other intellectual 
+property laws and by international treaties, which provide rights 
+and obligations in addition to the rights and obligations set forth here.
+
+#HELP_END
+
+/*******************************************************************************************
+ * Input/Output Signal Declarations
+ ******************************************************************************************/
+
+DIGITAL_INPUT 	Touch_Channel;
+DIGITAL_INPUT 	Using_Masking;
+DIGITAL_INPUT 	Connection_Open;
+DIGITAL_INPUT   Power_Off_Trigger;
+DIGITAL_INPUT	Power_On_Trigger;
+
+DIGITAL_INPUT	Refresh_Details;
+
+ANALOG_INPUT 	Stated_Player_ID;
+ANALOG_INPUT 	Touch_X;
+ANALOG_INPUT 	Touch_Y;
+
+BUFFER_INPUT 	Rx$[INPUT_BUFFER_LENGTH];
+STRING_INPUT 	Command_To_Player$[MAX_MESSAGE_LENGTH];
+STRING_INPUT 	Keyboard_Input$[MAX_MESSAGE_LENGTH];
+
+STRING_INPUT 	Play_Script$[MAX_MESSAGE_LENGTH];
+STRING_INPUT 	Console_Command$[MAX_MESSAGE_LENGTH];
+STRING_INPUT	Control_Music_Zone$[15];
+
+DIGITAL_OUTPUT 	OSD_Saver;
+DIGITAL_OUTPUT 	Camera_Angles_Available;
+DIGITAL_OUTPUT 	Movies_Available;
+DIGITAL_OUTPUT 	Music_Available;
+DIGITAL_OUTPUT 	Details_Visible;
+
+DIGITAL_OUTPUT 	Music_Playback_Active;
+DIGITAL_OUTPUT 	Movie_Playback_Active;
+
+DIGITAL_OUTPUT	Random_Status;
+DIGITAL_OUTPUT	Repeat_Status;
+                         
+DIGITAL_OUTPUT  Volume_Up;
+DIGITAL_OUTPUT  Volume_Down;
+DIGITAL_OUTPUT  Volume_Mute;
+
+DIGITAL_OUTPUT  Power_On_fb;
+DIGITAL_OUTPUT  Power_Off_fb;
+
+STRING_OUTPUT 	Tx$;
+
+ANALOG_OUTPUT 	Play_Mode;
+ANALOG_OUTPUT 	Title_Length;
+ANALOG_OUTPUT 	Title_Location;
+ANALOG_OUTPUT 	Title_Remaining;
+ANALOG_OUTPUT 	Title_Level;
+ANALOG_OUTPUT 	Chapter_Number;
+ANALOG_OUTPUT 	Chapter_Length;
+ANALOG_OUTPUT 	Chapter_Location;
+ANALOG_OUTPUT 	Chapter_Remaining;
+ANALOG_OUTPUT 	Chapter_Level;
+
+ANALOG_OUTPUT	System_Readiness_State;
+
+ANALOG_OUTPUT 	Movie_Location;
+
+STRING_OUTPUT 	Now_Playing_Title_Name$;
+STRING_OUTPUT 	Now_Playing_Artist_Name$;
+STRING_OUTPUT 	Now_Playing_Album_Name_or_Chapter$;
+STRING_OUTPUT	Now_Playing_Cover_Art_URL$;
+
+ANALOG_OUTPUT 	OSD_Screen;
+ANALOG_OUTPUT 	OSD_Popup;
+ANALOG_OUTPUT 	OSD_Dialog; 
+ANALOG_OUTPUT   Child_Mode_State;
+
+ANALOG_OUTPUT	CinemaScape_Mode;
+ANALOG_OUTPUT	CinemaScape_Scale_Mode;
+ANALOG_OUTPUT	CinemaScape_Mask;
+
+ANALOG_OUTPUT 	Image_Aspect_Ratio;
+ANALOG_OUTPUT 	Frame_Aspect_Ratio;
+
+ANALOG_OUTPUT 	Mask_Data;
+ANALOG_OUTPUT 	Mask_Conservative;
+
+ANALOG_OUTPUT 	Protocol_Version;
+
+ANALOG_OUTPUT 	User_Input;
+STRING_OUTPUT 	User_Input_Prompt$;
+STRING_OUTPUT 	User_Input_Text$;
+
+ANALOG_OUTPUT 	Mask_Abs_Top;
+ANALOG_OUTPUT 	Mask_Abs_Bottom;
+
+ANALOG_OUTPUT  	Current_Camera_Angle;
+ANALOG_OUTPUT  	Num_Camera_Angles;
+
+ANALOG_OUTPUT 	Video_Mode_Composite;
+ANALOG_OUTPUT 	Video_Mode_Component;
+ANALOG_OUTPUT 	Video_Mode_HDMI;
+
+STRING_OUTPUT 	User_Defined_Event$;
+
+STRING_OUTPUT 	Friendly_Name$;
+STRING_OUTPUT 	Details_Text$;
+STRING_OUTPUT 	Details_Title$;
+STRING_OUTPUT 	Details_Cover_URL$;
+
+ANALOG_OUTPUT 	Mask_calibrated_top;
+ANALOG_OUTPUT 	Mask_calibrated_bottom;
+
+STRING_OUTPUT	Controlled_Music_SN_Zone$;
+STRING_OUTPUT	Controlled_Music_CPDID_Zone$;
+
+DIGITAL_OUTPUT	Show_Disc_In_Tray_button;
+DIGITAL_OUTPUT	Disc_In_Tray_Ok_to_Import ;
+DIGITAL_OUTPUT	Disc_In_Tray_Imported ;
+DIGITAL_OUTPUT	Disc_In_Tray_Importing ;
+ANALOG_OUTPUT	Disc_In_Tray_Media_Type ;
+
+ANALOG_OUTPUT	Media_Type;
+STRING_OUTPUT   Rx$_Loopback;
+
+
+/*******************************************************************************************
+ * Structure Definitions
+ ******************************************************************************************/
+ 
+/*
+ * Note:  Be sure to initialize all declared STRING variables as needed
+ *        For example, in Function Main: struct.myString = "";
+ */
+STRUCTURE 	STRUCT_Details
+{ 
+	//General purpose
+	STRING 	library[CONTENT_DETAIL_LENGTH]; //Indicates whether this is for albums or music.
+	STRING 	title[CONTENT_DETAIL_LENGTH];
+	STRING 	albumTitle[CONTENT_DETAIL_LENGTH];
+	STRING 	performer[CONTENT_DETAIL_LENGTH];
+	STRING 	composer[CONTENT_DETAIL_LENGTH];
+	STRING 	genre[CONTENT_DETAIL_LENGTH];
+	STRING 	year[CONTENT_DETAIL_LENGTH];
+	STRING 	coverURL[CONTENT_DETAIL_LENGTH];
+	STRING 	runningTime[CONTENT_DETAIL_LENGTH];
+	//STRING	contentHandle[CONTENT_DETAIL_LENGTH]; //Not used
+	
+	//Movies only
+	STRING 	rating[CONTENT_DETAIL_LENGTH];
+	STRING 	ratingReason[CONTENT_DETAIL_LENGTH];
+	STRING 	synopsis[CONTENT_DETAIL_LENGTH];
+	STRING	discLocation[CONTENT_DETAIL_LENGTH];
+	//STRING	colorDescription[CONTENT_DETAIL_LENGTH]; //Not used
+	//STRING 	country[CONTENT_DETAIL_LENGTH];  //Not used
+	//STRING	aspectRatio[CONTENT_DETAIL_LENGTH]; //Not used
+	
+	//Music only
+	STRING	albumContentHandle[CONTENT_DETAIL_LENGTH];
+	//STRING	lastPlayed[CONTENT_DETAIL_LENGTH]; //Not used
+	//STRING	lastPlayedRelative[CONTENT_DETAIL_LENGTH]; //Not used
+	//STRING	timesPlayed[CONTENT_DETAIL_LENGTH]; //Not used
+	//STRING	trackNumber[CONTENT_DETAIL_LENGTH]; //Not used
+	//STRING	review[CONTENT_DETAIL_LENGTH]; //Not used
+	
+	INTEGER numDetailsExpected;
+};
+
+/*******************************************************************************************
+ * Global Variables
+ ******************************************************************************************/
+INTEGER 		_TouchXChanged;
+INTEGER 		_TouchYChanged;
+INTEGER 		_TouchPressed;
+INTEGER 		_DirectConnect;
+INTEGER			_SendTimeout;
+INTEGER			_TxCount;
+
+INTEGER			_PowerState;
+INTEGER			_PowerStateStatus;
+STRING 			_ModuleDescription[100];
+STRING 			_PlayerSN[16];
+STRING			_DeviceName[50];
+STRING 			_ConnectedDeviceSN[16];
+INTEGER 		_PlayerId;
+INTEGER 		_ConnectedDeviceID;
+INTEGER			_NumVidZones;
+INTEGER			_NumAudZones;
+INTEGER 		_LastChapter;
+STRING 			_MovieTitle[100];
+
+INTEGER			_NumberOfDetails;
+INTEGER			_NowPlayingDetailsLoading;
+INTEGER			_NowPlayingDetailsPending;
+STRING			_NowPlayingHandle[MAX_RESPONSE_ARG_LEN];
+INTEGER			_BrowseDetailsLoading;
+INTEGER			_BrowseDetailsPending;
+STRING			_BrowseDetailsHandle[MAX_RESPONSE_ARG_LEN];
+                    
+STRUCT_Details 	_ContentDetail;
+
+INTEGER 		_Debug;
+DYNAMIC STRING	_SymbolInstance[3];
+INTEGER			_CurrentDelimiter;
+STRING			_Delimiters[2][1];
+STRING			_FieldDelimiter[2][1];
+INTEGER 		_ParsingFlag;
+INTEGER			_FoundDelimiter;
+INTEGER			_ConnectionState;
+
+STRING			_ConnectionCommand[MAX_CONNECTION_COMMANDS][255];
+INTEGER			_ConnectionCommandCount;
+
+STRING			_MusicControlSN$[ZONE_ID_LENGTH];
+STRING			_MusicControlCPDID$[2];
+STRING			_MusicControlZone$[2];
+
+STRING			_ModuleShortDescription[20];
+
+STRING			_handle[40];
+
+// Define all strings needed for parsing in order to speed up parsing routine
+string			msgPLAYER_RESTART[20];
+string			msg01_BANG_020[10];
+string			msgAVAILABLE_DEVICES[20];
+string			msgPLAY_STATUS[20];
+string			msgMUSIC_NOW_PLAYING_STATUS[30];
+string			msgMUSIC_PLAY_STATUS[20];
+string			msgSCREEN_MASK[20];
+string			msgSCREEN_MASK2[20];
+string  		msgTITLE_NAME[20];
+string  		msgMUSIC_TITLE[20];
+string  		msgUI_STATE[20];
+string  		msgMOVIE_MEDIA_TYPE[20];
+string  		msgMOVIE_LOCATION[20];
+string  		msgASPECT_RATIO[20];
+string			msgCINEMASCAPE_MODE[20];
+string			msgSCALE_MODE[20];
+string			msgCINEMASCAPE_MASK[20];
+string  		msgDEVICE_INFO[20];
+string  		msgNUM_ZONES[20];
+string  		msgDEVICE_TYPE_NAME[20];
+string  		msgDEVICE_POWER_STATE[20];
+string  		msgPROTOCOL[20];
+string  		msgUSER_INPUT[20];
+string  		msgCAMERA_ANGLE[20];
+string  		msgVIDEO_MODE[20];
+string  		msgUSER_DEFINED_EVENT[20];
+string  		msgFRIENDLY_NAME[20];
+string  		msgCONTROLLED_ZONE[20];
+string  		msgHIGHLIGHTED_SELECTION[30];
+string  		msgCONTENT_DETAILS_OVERVIEW[30];
+string  		msgCONTENT_DETAILS[20];    
+string			msgCHILD_MODE_STATE[20];
+string			msgVOLUME_UP_PRESS[20];
+string			msgVOLUME_UP_RELEASE[20];
+string			msgVOLUME_UP[20];
+string			msgVOLUME_DOWN_PRESS[20];
+string			msgVOLUME_DOWN_RELEASE[30];
+string			msgVOLUME_DOWN[20];
+string			msgTOGGLE_MUTE[20];
+string			msgSYSTEM_READINESS[25];
+string			msgDISC_IN_TRAY_SELECTION[25];
+
+/*******************************************************************************************
+ * Functions
+ ******************************************************************************************/
+FUNCTION initMessages()
+{
+	msgPLAYER_RESTART 	= "PLAYER_RESTART";
+	msg01_BANG_020 		= "01/!/020:"; 
+	msgAVAILABLE_DEVICES= "AVAILABLE_DEVICES";
+	msgPLAY_STATUS		= "PLAY_STATUS"; 
+	msgMUSIC_NOW_PLAYING_STATUS = "MUSIC_NOW_PLAYING_STATUS";
+	msgMUSIC_PLAY_STATUS = "MUSIC_PLAY_STATUS";
+	msgSCREEN_MASK		= "SCREEN_MASK";
+	msgSCREEN_MASK2		= "SCREEN_MASK2";
+	msgTITLE_NAME 		= "TITLE_NAME";
+	msgMUSIC_TITLE 		= "MUSIC_TITLE";
+	msgUI_STATE 		= "UI_STATE";
+	msgMOVIE_MEDIA_TYPE = "MOVIE_MEDIA_TYPE";
+	msgMOVIE_LOCATION 	= "MOVIE_LOCATION";
+	msgCINEMASCAPE_MODE	= "CINEMASCAPE_MODE";
+	msgSCALE_MODE		= "SCALE_MODE";
+	msgCINEMASCAPE_MASK	= "CINEMASCAPE_MASK";
+	msgASPECT_RATIO 	= "ASPECT_RATIO";
+	msgDEVICE_INFO 		= "DEVICE_INFO";
+	msgNUM_ZONES 		= "NUM_ZONES";
+	msgDEVICE_TYPE_NAME = "DEVICE_TYPE_NAME";
+	msgDEVICE_POWER_STATE = "DEVICE_POWER_STATE";
+	msgPROTOCOL 		= "PROTOCOL";
+	msgUSER_INPUT 		= "USER_INPUT";
+	msgCAMERA_ANGLE 	= "CAMERA_ANGLE";
+	msgVIDEO_MODE 		= "VIDEO_MODE";
+	msgUSER_DEFINED_EVENT = "USER_DEFINED_EVENT";
+	msgFRIENDLY_NAME 	= "FRIENDLY_NAME";
+	msgCONTROLLED_ZONE 	= "CONTROLLED_ZONE";
+	msgHIGHLIGHTED_SELECTION = "HIGHLIGHTED_SELECTION";
+	msgCONTENT_DETAILS_OVERVIEW = "CONTENT_DETAILS_OVERVIEW";
+	msgCONTENT_DETAILS 	= "CONTENT_DETAILS"; 
+	msgCHILD_MODE_STATE = "CHILD_MODE_STATE";
+	msgVOLUME_UP_PRESS	= "VOLUME_UP_PRESS";
+	msgVOLUME_UP_RELEASE = "VOLUME_UP_RELEASE";
+	msgVOLUME_UP		= "VOLUME_UP";
+	msgVOLUME_DOWN_PRESS	= "VOLUME_DOWN_PRESS";
+	msgVOLUME_DOWN_RELEASE = "VOLUME_DOWN_RELEASE";
+	msgVOLUME_DOWN		= "VOLUME_DOWN";
+	msgTOGGLE_MUTE		= "TOGGLE_MUTE";
+	msgSYSTEM_READINESS = "SYSTEM_READINESS_STATE";
+	msgDISC_IN_TRAY_SELECTION = "DISC_IN_TRAY_SELECTION";
+}
+
+FUNCTION send(STRING data)
+{
+	STRING dataOut[MAX_MESSAGE_LENGTH];
+
+	if(_PlayerId = 0)
+	{
+		if(Stated_Player_ID = 0)
+		{
+			print("Kaleidescape (%s) Player_Id not yet determined, not sending message: %s\n", _SymbolInstance, data);
+			return;
+		}
+		_PlayerId = Stated_Player_Id;
+		if(_Debug) print("(%s) \"send\" setting Player_Id to Stated_Player_Id (%u).\n", _SymbolInstance, _PlayerId);
+	}
+	
+	makeString(dataOut,"%02d/%d/%s\n", _PlayerId, SEQUENCE_ID, data);
+	
+	if(_Debug) print("(%s) Sending:  %s", _SymbolInstance, dataOut);
+	
+	if( len(dataOut) > 256 )
+	{
+		print("Kaleidescape (%s) module NOT Sending data.  Message length is too long: %s\n", _SymbolInstance, dataOut);
+	}
+	else
+	{
+		Tx$ = dataOut;
+		_TxCount = _TxCount + 1;
+	}
+}  
+
+FUNCTION switchDelimiters(INTEGER newDelimiter)
+{
+	STRING RxTemp[INPUT_BUFFER_LENGTH];
+	INTEGER lastDelimiter;
+	INTEGER start;
+	INTEGER RxTempLength;
+	
+	//if(debug)
+		print("Kaleidescape (%s) switching delimiters - %d\n", _SymbolInstance, newDelimiter);
+	
+	//First, store the current delimiter value and change the global variable
+	lastDelimiter = _CurrentDelimiter;
+	_CurrentDelimiter = newDelimiter;
+	
+	//next, save the Rx buffer out to a temp variable, then clear it
+	RxTemp = Rx$;
+	clearBuffer(Rx$);
+	
+	//finally, push an old delimiter (to trigger the gather) 
+	//and the contents of the buffer back to the Rx loopback for re-processing by the gather
+	
+	//trip the old delmiter to clear the gather
+	Rx$_Loopback = _Delimiters[lastDelimiter];
+	
+	RxTempLength = len(RxTemp);
+	for( start=1 to RxTempLength step 255 )
+	{
+		// outstring can't exceed 256 chars
+		Rx$_Loopback = mid(RxTemp, start, 255);
+	}
+}
+
+
+FUNCTION requestStartupStatus()
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	
+	delay(100);		//pause to clear any pending responses
+	
+	//Retreive current status
+	send("GET_MOVIE_LOCATION:");
+	send("GET_PLAY_STATUS:");
+	send("GET_MUSIC_PLAY_STATUS:");
+	send("GET_PLAYING_TITLE_NAME:");
+	send("GET_CINEMASCAPE_MODE:"); 
+	send("GET_SCALE_MODE:"); 
+	send("GET_UI_STATE:"); 
+	send("GET_CHILD_MODE_STATE:");
+	send("GET_MOVIE_MEDIA_TYPE:");
+	send("GET_VIDEO_MODE:");
+	send("GET_FRIENDLY_NAME:");
+	send("GET_HIGHLIGHTED_SELECTION:");
+	send("GET_CONTROLLED_ZONE:");
+	send("GET_SYSTEM_READINESS_STATE:");
+	send("GET_DISC_IN_TRAY_SELECTION:");
+
+	if(Using_Masking = 1)
+	{
+		send("SET_SCREEN_MASK:1:");
+	}
+
+	send("GET_PROTOCOL:");
+
+}
+
+
+//clear out our info on the connected device (called when the connection drops)
+FUNCTION clearStatus()
+{
+	if(_Debug) print("(%s) clearing status.\n", _SymbolInstance);
+	
+	_PlayerId = Stated_Player_ID; //assume that the stated player ID is correct
+	
+	if(_PlayerId = 1)
+		_DirectConnect = ON; //assume state of directly connected based on the player ID
+	else
+		_DirectConnect = OFF;
+
+	_NumVidZones = 0;
+	_NumAudZones = 0;
+	_PlayerSN = NULLSTRING;
+	_DeviceName = NULLSTRING;
+
+	Play_Mode = 999;
+
+	Disc_In_Tray_Media_Type = 0;
+	Disc_In_Tray_Ok_to_Import = 0;
+	Disc_In_Tray_Imported = 0;
+	Disc_In_Tray_Importing = 0;
+	Show_Disc_In_Tray_button = 0;
+}
+
+FUNCTION initConnection()
+{
+	refactorConnectionSettings(Stated_Player_ID, _PlayerSN, _PlayerID, _ConnectedDeviceSN, _ConnectedDeviceID, _DirectConnect, _Debug);
+
+    //_CurrentDelimiter = ON;
+    switchDelimiters(ON);	//attempt to turn on binary delimiters
+    Tx$ = "01/0/SET_PROTOCOL_SETTINGS:BINARY_DELIMITERS:LATIN-1:\n";
+
+    delay(100);	//pause to get a clear response
+	
+	send("GET_PROTOCOL:");
+
+	if(_DirectConnect = OFF && _PlayerId != 1) //if we're not local
+	{
+		Tx$ = "01/0/ENABLE_EVENTS:" + itoa(_PlayerId) + ":\n";	//enable events for the device
+		delay(100); //delay one second to ensure it's processed
+	}
+	
+}
+
+Function clearFeedback()
+{
+ 	User_Input = 0;
+
+ 	OSD_Screen = 0;
+ 	OSD_Popup = 0;
+ 	OSD_Dialog = 0;
+ 	Child_Mode_State = 0;
+	Details_Visible = 0;
+	CinemaScape_Mode = 0;
+                  
+	Music_Playback_Active = 0;
+	Play_Mode = 999;
+	
+	//set the controlled zone back to our home zone
+	_MusicControlSN$ = right(_PlayerSN,12);
+	makestring(_MusicControlCPDID$, "%02d", Stated_Player_ID);
+	_MusicControlZone$ = NULLSTRING;
+	Controlled_Music_SN_Zone$ = _MusicControlSN$ + "." + _MusicControlZone$;
+	Controlled_Music_CPDID_Zone$ = _MusicControlCPDID$ + "." + _MusicControlZone$;
+}
+
+Function ConnectionEvent(INTEGER stateEvent)
+{
+	integer command, loop;
+	command = ConnectionHandler(stateEvent, _ConnectionState, _ConnectionCommand, _ConnectionCommandCount, _PowerState, _PowerStateStatus, _ModuleDescription, _DirectConnect, _Debug);
+	if(_Debug) print("(%s) ConnectionHandler said do %d.  PowerState = %d.\n", _SymbolInstance, command, _PowerState);
+	switch(command)
+	{
+		case(RESPONSE_NO_ACTION): 	 	return;	
+		case(RESPONSE_SEND_COMMAND): 	{}		//no additional action
+		case(RESPONSE_DIRECT_SEND):	 	Tx$ = _ConnectionCommand[MAX_CONNECTION_COMMANDS];
+		case(RESPONSE_INITIALIZE): 	 	requestStartupStatus();
+		case(RESPONSE_CLEAR_INIT):	 	clearStatus();
+		case(RESPONSE_INIT_CONN):		initConnection();
+		case(RESPONSE_POWERED_OFF):		clearFeedback();
+	}
+	
+		//for every command we're to send, 
+	for(loop = 1 to _ConnectionCommandCount)
+	{
+		Send(_ConnectionCommand[loop]);	//send it
+	}
+	_ConnectionCommandCount = 0;	//clear this
+	
+	Power_On_fb  = (_PowerState = POWER_ON);
+	Power_Off_fb = (_PowerState = POWER_OFF);
+}  
+
+
+
+INTEGER_FUNCTION processAlienDeviceInfo(STRING message)
+{
+	INTEGER startpos;
+	STRING SN[12];
+	STRING CPDID[2];
+	STRING command[MAX_MESSAGE_LENGTH];	
+	
+	if(mid(message,10,11) = "DEVICE_INFO")				//find the message if using CPDID
+		startpos = 29;
+	else if(mid(message,21,11) = "DEVICE_INFO")			//find the message if using SN
+		startpos = 40;
+	else return(on);
+	
+	SN = mid(message, startpos, 12);					//extract the serial number (12 digits)
+	CPDID = mid(message, startpos+13, 2);				//extract the CPDID (field past SN)
+	
+	if(CPDID = _MusicControlCPDID$ && _MusicControlSN$ = NULLSTRING)	//if we've got a controlled CPDID, but no SN
+	{
+		_MusicControlSN$ = SN;									//store the SN
+		command = "SET_CONTROLLED_ZONE:#" + _MusicControlSN$ + "." + _MusicControlZone$ + ":";	
+		send(command);											//send the command to control the zone
+	}
+	else if(SN = _MusicControlSN$ && _MusicControlCPDID$ = NULLSTRING)	//if we've got an SN, but no CPDID
+	{
+		_MusicControlCPDID$ = CPDID;							//we've already sent the command to control the zone, just record the CPDID
+		Controlled_Music_CPDID_Zone$ = _MusicControlCPDID$ + "." + _MusicControlZone$;		//and indicate the control
+	}
+	return(off);
+	
+}
+
+FUNCTION setControlledZone()
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	//	makestring(_MusicControlCPDID$, "%02s", target);	//ensure it's exactly two characters
+	
+	if(_MusicControlSN$ = NULLSTRING)
+	{
+		if(_MusicControlCPDID$ = NULLSTRING)				//if no CPDID was given either
+			return;											//just return - nothing to do
+			
+		Tx$ = _MusicControlCPDID$ + "/0/GET_DEVICE_INFO:\n";	//ask for data about this CPDID
+		return;												//can't do anything else until we get the SN		
+	}
+	
+	//set the controlled zone
+	command = "SET_CONTROLLED_ZONE:#" + _MusicControlSN$ + "." + _MusicControlZone$ + ":";
+	send(command);
+}
+
+FUNCTION doRequestBrowseDetails()
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	INTEGER failsafeCount;
+
+	/*
+	 * Next, we check to see how many threads are waiting to get content detail.  If there's
+ 	 * already one out there, we sit tight and wait for it to finish before we attempt to do our
+	 * request
+	 */
+	if(_BrowseDetailsPending = ON) return; //if there is already a pending request, do nothing
+	_BrowseDetailsPending = ON; //set the flag to prevent re-entering this routine
+	
+	//if we are already receiving content details...
+	failsafeCount = 0;
+	while(_BrowseDetailsLoading || _NowPlayingDetailsLoading || (Rx$ != NULLSTRING) )
+	{
+		delay(50); //check again in a moment
+		failsafeCount = failsafeCount + 1;
+		//print("K (%s) Looping.  TestCount=%d, failsafeCount=%d\n", getSymbolInstanceUMC(), TestCount, failsafeCount);
+		if (failsafeCount >= 20)
+		{
+			//assume last command failed, and run anyway
+			_BrowseDetailsLoading = OFF;
+			_NowPlayingDetailsLoading = OFF;    
+			//print("K (%s) reached failsafecount.  Requesting content details.  TestCount=%d\n", getSymbolInstanceUMC(), TestCount);
+			break;
+		}
+	}
+	Details_Visible = OFF; //hide the window
+	_BrowseDetailsPending = OFF; //clear the pending flag to allow re-entry
+	_BrowseDetailsLoading = ON; //indicate that we are now going to run the command
+	//Clear the pending flag for the proper detail and grab the handle to request.
+	
+	command = "GET_CONTENT_DETAILS:" + _BrowseDetailsHandle + "::";	
+	send(command);
+}
+
+FUNCTION requestBrowseDetails(STRING handle)
+{
+	_BrowseDetailsHandle = handle;
+	Details_Visible = OFF; //hide the window		
+	wait(40)
+	{
+		doRequestBrowseDetails();
+	}
+}
+
+FUNCTION doRequestNowPlayingDetails()
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	INTEGER failsafeCount;
+	/*
+	 * Next, we check to see how many threads are waiting to get content detail.  If there's
+ 	 * already one out there, we sit tight and wait for it to finish before we attempt to do our
+	 * request
+	 */
+	if(_NowPlayingDetailsPending = ON) return; //if there is already a pending request, do nothing
+	_NowPlayingDetailsPending = ON; //set the flag to prevent re-entering this routine
+	
+	//if we are already receiving content details...
+	failsafeCount = 0;
+	while(_BrowseDetailsLoading || _NowPlayingDetailsLoading || (Rx$ != NULLSTRING))
+	{
+		delay(20); //check again in a moment
+		failsafeCount = failsafeCount + 1;
+		if (failsafeCount >= 50)
+		{
+			//assume last command failed, and run anyway
+			_BrowseDetailsLoading = OFF;
+			_NowPlayingDetailsLoading = OFF;
+		}
+	}
+	_NowPlayingDetailsPending = OFF; //clear the pending flag to allow re-entry
+	_NowPlayingDetailsLoading = ON; //indicate that we are now going to run the command
+	//Clear the pending flag for the proper detail and grab the handle to request.
+
+	command = "GET_CONTENT_DETAILS:" + _NowPlayingHandle + "::";	
+	send(command);
+}
+
+FUNCTION requestNowPlayingDetails(STRING handle)
+{
+	_NowPlayingHandle = handle;
+	wait(40)
+	{
+		doRequestNowPlayingDetails();
+	}
+}
+
+
+
+FUNCTION renderDetails()
+{
+	INTEGER totalSeconds;
+	INTEGER totalMinutes;
+	INTEGER hours;
+	INTEGER minutes;
+	STRING 	timeString[255];
+	STRING 	temp_details[255];
+	
+	if(NULLSTRING != _ContentDetail.coverURL)
+	{
+		Details_Cover_URL$ = _ContentDetail.coverURL;
+	}
+	else
+	{
+		Details_Cover_URL$ = NULLSTRING;
+	}
+
+	if( "albums" = _ContentDetail.library) //Proper check order breaks Crestron compiler
+	{
+		totalSeconds = atoi(_ContentDetail.runningTime);
+		hours = totalSeconds / 3600;
+		minutes = (totalSeconds mod 3600) / 60;
+		timeString = makeTimeString(hours, minutes);
+
+		Details_Title$ = _ContentDetail.performer + " - " + _ContentDetail.title;
+		
+		if(_ContentDetail.year = NULLSTRING)
+		{
+			Details_Text$ = timeString;
+		}
+		else
+		{
+			makeString(Details_Text$, "Released %s, %s", _ContentDetail.year, timeString);
+		}
+		
+		//the APPEND_TEXT_2 is used here to fix a problem exhibited on the TPS-6000
+		if(NULLSTRING != _ContentDetail.genre)
+		{
+			//substitute commas for line feeds
+			_ContentDetail.genre = substitute(_ContentDetail.genre, CR, ", ");
+			
+			//if there's only one
+   			if(find(",", _ContentDetail.genre) = 0)
+   			{
+				makeString(Details_Text$, "%s \r \rGENRE\r%s", APPEND_TEXT_2, _ContentDetail.genre);
+	        }
+	        else //more than one
+	        {
+		        makeString(Details_Text$, "%s \r \rGENRES\r%s", APPEND_TEXT_2, _ContentDetail.genre);
+	        }
+		}
+			
+		if(NULLSTRING != _ContentDetail.performer)
+		{
+			makeString(Details_Text$, "%s \r \rPERFORMER\r%s", APPEND_TEXT_2, _ContentDetail.performer);
+		} 
+	    
+	    if(NULLSTRING != _ContentDetail.discLocation)
+	    {               
+   			_ContentDetail.discLocation = substitute(_ContentDetail.discLocation, LF, "\r");       	    	
+	    	makeString(Details_Text$, "%s \r \rLOCATION\r%s", APPEND_TEXT_2, _ContentDetail.discLocation);
+	    }
+	}
+	
+	else if("movies" = _ContentDetail.library)
+	{
+		/*
+		 * the following lines should be removed when the Running_time for movies is 
+		 * corrected  *****
+		 */
+		totalMinutes = atoi(_ContentDetail.runningTime);
+		hours = totalMinutes / 60;
+		minutes = totalMinutes mod 60;
+		timeString = makeTimeString(hours, minutes);
+		
+		//if there's both a time and year
+		if(timeString != NULLSTRING && NULLSTRING != _ContentDetail.year)
+		{
+			timeString = timeString + ", ";
+		}
+
+        Details_Title$ = _ContentDetail.title;
+
+		makeString(temp_details, "Rated %s", _ContentDetail.rating);
+        if(NULLSTRING != _ContentDetail.ratingReason)
+        {
+        	makeString(temp_details, "%s for %s", temp_details, _ContentDetail.ratingReason);
+        }
+        
+        if(timeString != NULLSTRING || _ContentDetail.year != NULLSTRING)	//if there's a time or year
+        {
+        	makeString(temp_details, "%s; %s%s", temp_details, timeString, _ContentDetail.year);
+        }
+        
+        Details_Text$ = temp_details;
+        
+        if(NULLSTRING != _ContentDetail.synopsis)
+        {
+        	makeString(Details_Text$, "%s \r \rSYNOPSIS\r%s", APPEND_TEXT_2, _ContentDetail.synopsis);
+        }
+        
+        if(NULLSTRING != _ContentDetail.genre)
+        {
+        	//substitute commas for line feeds
+   			_ContentDetail.genre = substitute(_ContentDetail.genre, CR, ", "); 
+   			if(find(",", _ContentDetail.genre) = 0) //if there's only one
+   			{
+	        	makeString(Details_Text$, "%s \r \rGENRE\r%s", APPEND_TEXT_2, _ContentDetail.genre);
+	        }
+	        else //more than one
+	        {
+	        	makeString(Details_Text$, "%s \r \rGENRES\r%s", APPEND_TEXT_2, _ContentDetail.genre);
+	        }
+	        
+        }
+        	
+        if(NULLSTRING != _ContentDetail.performer)
+        {
+        	//substitute commas for line feeds        	
+   			_ContentDetail.performer = substitute(_ContentDetail.performer, CR, ", "); 
+	        makeString(Details_Text$, "%s \r \rCAST\r%s", APPEND_TEXT_2, _ContentDetail.performer);
+	    }
+	        
+	    if(NULLSTRING != _ContentDetail.composer)
+	    {
+	    	//substitute commas for line feeds
+   			_ContentDetail.composer = substitute(_ContentDetail.composer, CR, ", "); 
+	        if(find(",", _ContentDetail.composer) = 0) //if there's only one
+	        {
+	        	makeString(Details_Text$, "%s \r \rDIRECTOR\r%s", APPEND_TEXT_2, _ContentDetail.composer);
+	        }
+	        else //more than one
+	        {
+	        	makeString(Details_Text$, "%s \r \rDIRECTORS\r%s", APPEND_TEXT_2, _ContentDetail.composer);
+	        }
+	    }
+	    
+	    if(NULLSTRING != _ContentDetail.discLocation)
+	    {               
+   			_ContentDetail.discLocation = substitute(_ContentDetail.discLocation, LF, "\r");       	    	
+	    	makeString(Details_Text$, "%s \r \rLOCATION\r%s", APPEND_TEXT_2, _ContentDetail.discLocation);
+	    }
+	}
+	
+	Details_Visible = ON; //show the window
+}
+
+FUNCTION receiveContentDetail(byref string args[])
+{
+
+	if(_BrowseDetailsLoading)
+	{                            
+    	if(args[3] = "Artist")
+	    {
+	    	_ContentDetail.performer = args[4];
+	    }
+	    else if(args[3] = "Artists")		
+	    {
+	    	_ContentDetail.performer = args[4];
+	    }
+	    else if(args[3] = "Performer")
+	    {
+	    	_ContentDetail.performer = args[4]; 
+		}
+	    else if(args[3] = "Performers")
+	    {
+	    	_ContentDetail.performer = args[4]; 
+		}
+	    else if(args[3] = "Composer")
+	    {
+	    	_ContentDetail.composer = args[4]; 
+		}
+	    else if(args[3] = "Composers")
+	    {
+	    	_ContentDetail.composer = args[4]; 
+		}
+	    else if(args[3] = "Genre")
+	    {
+	    	_ContentDetail.genre = args[4]; 
+		}
+	    else if(args[3] = "Genres")
+	    {
+	    	_ContentDetail.genre = args[4]; 
+		}
+	    else if(args[3] = "Album_title")
+	    {
+	    	_ContentDetail.albumTitle = args[4]; 
+		}
+	    else if(args[3] = "Title")
+	    {
+	    	_ContentDetail.title = args[4]; 
+		}	
+	   	else if(args[3] = "Track_title")
+	   	{
+	   		_ContentDetail.title = args[4];
+	   	}
+	    else if(args[3] = "Album_year")
+	    {
+	    	_ContentDetail.year = args[4]; 
+		}
+	    else if(args[3] = "Rating")
+	    {
+	    	_ContentDetail.rating = args[4];
+		}
+	    else if(args[3] = "Rating_reason")
+	    {
+	    	_ContentDetail.ratingReason = args[4];
+		}
+	    else if(args[3] = "Year")
+	    {
+	    	_ContentDetail.year = args[4];
+	    	if(_ContentDetail.year = "0")
+	    	{
+	    		_ContentDetail.year = NULLSTRING;
+	    	}
+		}
+	    else if(args[3] = "Actors")
+	    {
+	    	_ContentDetail.performer = args[4];
+		}
+	    else if(args[3] = "Directors")
+	    {
+	    	_ContentDetail.composer = args[4];
+		}
+	    else if(args[3] = "Running_time")
+	    {
+	    	_ContentDetail.runningTime = args[4];    	
+		}
+		else if(args[3] = "Synopsis")
+		{
+			_ContentDetail.synopsis = args[4];
+		}
+	    else if(args[3] = "Cover_URL")
+	    {
+	    	#IF_NOT_DEFINED SERVER_IP_ADDRESS
+		    	_ContentDetail.coverURL = args[4];
+		   	#ENDIF
+
+			#IF_DEFINED SERVER_IP_ADDRESS
+				_ContentDetail.coverURL = processNAT(args[4], SERVER_IP_ADDRESS);
+			#ENDIF		   		
+	    }
+	   	else if(args[3] = "Album_content_handle")
+	   	{		   		
+		   	_ContentDetail.albumContentHandle = args[4];
+	   	}     
+	   	else if(args[3] = "Disc_location")
+	   	{
+	   		_ContentDetail.discLocation = args[4];
+	   	}
+   	    
+	   	//if we've seen the last detail, render the details
+	   	if(atoi(args[2]) = _ContentDetail.numDetailsExpected)
+	   	{
+	   		//Set the title to the album title if title is empty.
+	   		if(_ContentDetail.title = NULLSTRING && _ContentDetail.albumTitle != NULLSTRING)
+			{
+				_ContentDetail.title = _ContentDetail.albumTitle;
+			}
+			
+			//Return that the content has been fully loaded.
+	   		_BrowseDetailsLoading = OFF;
+	  		renderDetails();
+	   	}
+    }
+    else if(_NowPlayingDetailsLoading)
+    {
+    	if(args[3] = "Cover_URL")
+    	{	    
+    		if(args[4] != NULLSTRING)
+			{
+				#IF_NOT_DEFINED SERVER_IP_ADDRESS
+					Now_Playing_Cover_Art_URL$ = args[4];
+				#ENDIF
+				
+				#IF_DEFINED SERVER_IP_ADDRESS
+					Now_Playing_Cover_Art_URL$ = processNAT(args[4], SERVER_IP_ADDRESS);
+				#ENDIF
+			}
+			else
+			{
+				Now_Playing_Cover_Art_URL$ = NULLSTRING;
+			}
+		}
+		
+		if(atoi(args[2]) >= _NumberOfDetails)
+		{
+			_NowPlayingDetailsLoading = OFF;
+		}
+    }
+}
+
+//used to read into the available devices message and determine if our controlled device is on or offline.
+FUNCTION checkAvailableDevices(string message, string fieldDelimiter)
+{
+	string playerIdSearchString[5];
+	
+	if(_Debug) print("(%s) Searching for my device in AVAILABLE_DEVICES\n", _SymbolInstance);
+	//set up the string to look for (":00:") and store it in playerIdSearchString
+	makeString(playerIdSearchString,"%s%02d%s", fieldDelimiter, _PlayerId, fieldDelimiter);
+				
+	//search for the Player id within the message
+	if(find(playerIdSearchString, message, 27) > 0)
+	{
+		ConnectionEvent(EVENT_DEVICE_ONLINE);
+	}
+	else //logic falls here if the player isn't online
+	{
+		ConnectionEvent(EVENT_DEVICE_OFFLINE);						
+	}
+
+}
+
+
+/*
+ *       Kaleidescape responses and events have this format:
+ *    
+ *           01/1/000:COMMAND:ARG1:ARG2:ARG3:/28 
+ *           
+ *       where:
+ *       
+ *           01 is the device ID 
+ *           1 is the sequence number (the same one we sent it in the command)
+ *           000 is the status (000 means "success", anything else is an error)
+ *           COMMAND identifies the kind of data being sent to us
+ *           ARGn are the arguments of the command
+ *           28 is the checksum of the message (always two digits)   
+ *           
+ *       So we will parse the response from the beginning to the end.
+ *       Since we may be dealing with a serial connection, we must assume
+ *       that this buffer may have been corrupted in transit.  We must be
+ *       very careful to check that the syntax of the response is valid.
+ *       (This is not really necessary when using TCP/IP since the TCP 
+ *       layer ensures this for us.)
+ */
+        
+//Parse the string within "message" and process   
+FUNCTION parseMessage(string message, byref string args[])
+{
+	INTEGER messagePosition;
+	INTEGER messageEnd;
+	INTEGER messageErrorCode; 
+	INTEGER numArgs; // the number of args	
+   	INTEGER contentDetailsFinished;
+   	INTEGER newOSDScreen;
+	INTEGER binaryDelimited;
+	INTEGER eventTrigger;	
+	INTEGER errorCode;
+		
+	messageEnd = len(message);
+    if(byte(message, messageEnd) = 4)
+    {
+    	binaryDelimited = ON;
+    	messageEnd = messageEnd - 1;
+    }
+    else
+    {
+    	binaryDelimited = OFF;
+	    // Remove trailing carriage return and/or linefeed
+	    while (messageEnd > 0 && (byte(message, messageEnd) = CR || 
+	    					  byte(message, messageEnd) = LF) )
+	    {
+	        messageEnd = messageEnd - 1;
+	    }
+	}
+	
+	/*
+	 * trap the PLAYER_RESTART even if the message isn't addressed to us, 
+	 * and if it lacks the leading 000:
+	 */
+	if(  mid(message,6, 14) = msgPLAYER_RESTART  )
+	{	     
+		ConnectionEvent(EVENT_PLAYER_RESTART);
+		return;
+	}
+	
+	//check for the "device offline" error, even if it's not addressed to us
+	if( left(message,9) = msg01_BANG_020 ) //"01/!/020:"
+	{
+		ConnectionEvent(EVENT_01_BANG_020);
+	}
+    
+    //if the device isn't yet online, engage our parser for device 01/0
+    if( _ConnectionState < STATE_DEVICE_ONLINE )
+    {
+		//if this is an info message about the attached device, call the special parser
+		if( byte(message,1) = '0' &&     // 01x0x000
+		    byte(message,2) = '1' &&
+		    byte(message,4) = '0' && //sequence
+		    byte(message,6) = '0' && //error code 100's
+		    byte(message,7) = '0' && //error code 10's
+		    byte(message,8) = '0'  ) //error code 1's
+		{
+			eventTrigger = parse010MessageEvent(message, messageEnd, _PlayerID, _DirectConnect, _ConnectedDeviceSN, _ConnectedDeviceID, _Debug);
+			if(eventTrigger)
+				ConnectionEvent(eventTrigger);
+			return;
+		}    
+    }
+    
+	if(!_DirectConnect) //only check if we're not directly connected
+	{
+		//check for the available devices change message
+		if( mid(message, 10, 17) = msgAVAILABLE_DEVICES )
+		{
+			checkAvailableDevices(message, _FieldDelimiter[binaryDelimited]);
+			return; //if the available devices message was found, don't bother processing further
+		}
+	}
+		
+	//determine if the message is valid
+	messageErrorCode = checkMessage(message, _PlayerId, 0, 
+									SEQUENCE_ID, messageEnd, _DirectConnect, _Debug);   
+	
+    if (messageErrorCode != MESSAGE_GOOD) 
+    {   
+    	if (messageErrorCode = MESSAGEERROR_SN_MESSAGE)
+    		processAlienDeviceInfo(message);		//check for any alien device info
+    	return; 
+    }
+            	
+	if(_Debug) print("(%s) Received:  %s\n", _SymbolInstance, message);
+    
+	//Start after the header and checksum
+	messagePosition = 1;
+	if(byte(message,3) = '.') //if there's a stream ID
+	{
+	    messagePosition = messagePosition + 8; //start after the header (w/stream ID)
+    }
+    else
+    {
+	    messagePosition = messagePosition + 5; //start after the header
+    }    
+    if(!binaryDelimited)
+    {    
+    	messageEnd = messageEnd - 3;	//skip over the checksum of a printable delimited message
+    }
+    
+    //clear any pending timeout
+    //cancelWait(SendTimeoutWait);  --handled by the watchdog
+    
+    _SendTimeout = OFF;
+    ConnectionEvent(EVENT_VALID_MESSAGE);
+    
+    //Initialize our parsing variables.
+    numArgs = 0;
+
+	getNArguments(args, numArgs, 2, message, messagePosition, messageEnd);
+    
+    if(byte(args[0],1)!='0' || byte(args[0],2)!='0' || byte(args[0],3)!='0') //if there is an error condition noted by the player
+    //(faster than !args[0]="000")
+    {
+    	errorCode = atoi(args[0]);
+    	
+    	ConnectionEvent(EVENT_ERROR_OFFSET + errorCode);
+    	
+    	//pass the error code to the error handler
+    	printPlayerError(errorCode,args[1], _PlayerId);      
+    	//print("Full message: %s", message);
+    	//print("Numargs: %d", numArgs);
+    	return;
+   	}
+   
+    if(args[1] = msgPLAY_STATUS)
+    {
+    	getNArguments(args, numArgs, 10, message, messagePosition, messageEnd);
+    	Play_Mode        = atoi(args[2]);
+    	Title_Length     = atoi(args[5]);
+    	Title_Location   = atoi(args[6]);
+    	Chapter_Number   = atoi(args[7]); 
+    	Chapter_Length   = atoi(args[8]); 
+    	Chapter_Location = atoi(args[9]);
+    	
+    	if(Title_Length <> 0) //prevent div by 0 errors
+    	{
+    		//calculate level of current title
+	    	Title_Level = Title_Location * 65535 / Title_Length;
+	    }
+	    else
+	    {
+	    	Title_Level = 0;
+	    }
+	    	
+	    if(Chapter_Length <> 0) //prevent div by 0 errors
+	    {
+	    	//calculate level of current chapter
+	    	Chapter_Level = Chapter_Location * 65535 / Chapter_Length;
+	    }
+	    else
+	    {
+	    	Chapter_Level = 0;
+	    }
+    	
+    	Title_Remaining = Title_Length - Title_Location; //calculate title time remaining
+    	Chapter_Remaining = Chapter_Length - Chapter_Location; //calculate chapter time remaining
+    	
+		Movie_Playback_Active = (byte(args[2],1) <> '0'); //indicate that a movie is playing
+
+    	if(_LastChapter <> Chapter_Number) //if we've got to a new chapter
+    	{
+    		if(Chapter_Number > 0)
+    		{
+	    		makestring(Now_Playing_Album_Name_or_Chapter$, "Chapter %d", Chapter_Number);
+	    	}
+	    	else
+	    	{
+	    		Now_Playing_Album_Name_or_Chapter$ = TPNULLSTRING;
+	    	}
+	    		
+	    	Now_Playing_Artist_Name$ = TPNULLSTRING;
+	    		
+    		_LastChapter = Chapter_Number; //remember the state
+    	}
+   	}
+    else if(args[1] = msgMUSIC_NOW_PLAYING_STATUS)	
+    {
+    	getNArguments(args, numArgs, 6, message, messagePosition, messageEnd);
+    	
+    	Chapter_Number = atoi(args[3]) + 1; //zero ref
+    	Repeat_Status = (byte(args[4],1) = '1');  //byte comparisons are much faster than string comparisons
+    	Random_Status = (byte(args[5],1) = '1');
+
+	}	                                  
+    else if(args[1] = msgMUSIC_PLAY_STATUS)
+    {
+    	getNArguments(args, numArgs, 6, message, messagePosition, messageEnd);
+    	
+    	Play_Mode		= atoi(args[2]);    	
+    	Title_Length 	= atoi(args[4]);
+    	Title_Location	= atoi(args[5]);
+    	Title_Remaining = Title_Length - Title_Location;
+    	
+    	Music_Playback_Active = (byte(args[2],1) <> '0'); //indicate that music is playing
+    	
+    	if(Title_Length <> 0)
+    	{
+    		//calculate level of current title
+    		Title_Level = Title_Location * 65535 / Title_Length;
+    	}
+    	else
+    	{
+    		Title_Level = 0;
+    	}
+    }    	
+    else if(args[1] = msgSCREEN_MASK)
+    {
+    	getNArguments(args, numArgs, 8, message, messagePosition, messageEnd);
+
+    	Mask_Data         = atoi(args[2]);
+    	Mask_Conservative = atoi(args[5]);
+    	Mask_Abs_Top      = atoi(args[6]);	//convert to analog percentage
+    	Mask_Abs_Bottom   = atoi(args[7]);	//convert to analog percentage
+   	}    	
+   	else if(args[1] = msgSCREEN_MASK2)
+   	{
+   		getNArguments(args, numArgs, 6, message, messagePosition, messageEnd);
+
+   		Mask_calibrated_top 	= atoi(args[4]);
+   		Mask_calibrated_bottom 	= atoi(args[5]);
+   	}
+    else if(args[1] = msgTITLE_NAME)
+    {
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+    	
+    	Now_Playing_Title_Name$ = args[2];
+    	_MovieTitle = args[2];
+   	}   	
+   	else if(args[1] = msgMUSIC_TITLE)
+   	{
+   		getNArguments(args, numArgs, 7, message, messagePosition, messageEnd);
+   		
+   		if(args[2] = NULLSTRING)
+   		{
+   			Now_Playing_Title_Name$ = _MovieTitle;
+   		}
+   		else
+   		{
+	   		Now_Playing_Title_Name$ = args[2];
+	   	}
+	   	Now_Playing_Artist_Name$ = nullToSpace(args[3]);
+		Now_Playing_Album_Name_or_Chapter$ = nullToSpace(args[4]);
+		
+		//Handle Cover Art
+		Now_Playing_Cover_Art_URL$ = NULLSTRING;
+
+		//retrieve the current song data (For the Cover URL only at this time)
+		if(args[6] != NULLSTRING) //Check to see if we have a content handle
+		{
+			requestNowPlayingDetails(args[6]);
+		}
+
+   	}    	
+    else if(args[1] = msgUI_STATE)
+    {
+    	getNArguments(args, numArgs, 6, message, messagePosition, messageEnd);
+    	
+    	newOSDScreen = atoi(args[2]);
+    	
+    	//Check to see if we just switched from movies to music or vice versa...
+	    if(OSD_Screen < 8 && newOSDScreen >= 8  || //We are switching from movies to music.
+	    	OSD_Screen > 8 && newOSDScreen <= 8 ) //We are switching from music to movies
+	    {
+ 			Details_Visible = OFF; //hide the window
+	    }
+    	
+    	OSD_Screen = newOSDScreen;
+    	OSD_Popup  = atoi(args[3]);
+    	OSD_Dialog = atoi(args[4]);
+    	if(byte(args[5],1) = '1')
+    	{
+	    	OSD_Saver = ON;
+	    }
+	    else
+	    {
+	    	OSD_Saver = OFF;
+	    }
+	    	    
+	}  
+	else if(args[1] = msgCHILD_MODE_STATE)
+	{
+		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+		
+		Child_Mode_State = atoi(args[2]);		
+	}
+	else if(args[1] = msgMOVIE_MEDIA_TYPE)
+	{
+		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+		
+		Media_Type = atoi(args[2]);
+		
+	}
+    else if(args[1] = msgMOVIE_LOCATION)
+    {
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+    	
+    	Movie_Location = atoi(args[2]);
+   	}
+	else if(args[1] = msgCINEMASCAPE_MODE)
+	{
+		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+		
+		CinemaScape_Mode = atoi(args[2]);
+
+		if(CinemaScape_Mode)
+		{
+			send("GET_CINEMASCAPE_MASK:");
+		}
+	}
+	else if(args[1] = msgSCALE_MODE)
+	{
+		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+		
+		CinemaScape_Scale_Mode = atoi(args[2]);
+	}
+	else if(args[1] = msgCINEMASCAPE_MASK)
+	{
+		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+		
+		CinemaScape_Mask = atoi(args[2]);		
+	}
+    else if(args[1] = msgASPECT_RATIO)
+    {
+    	getNArguments(args, numArgs, 4, message, messagePosition, messageEnd);
+    	
+    	Image_Aspect_Ratio = atoi(args[2]);
+    	Frame_Aspect_Ratio = atoi(args[3]);
+   	}  
+  	else if(args[1] = msgDEVICE_INFO) //what type of device are we talking to (sanity check)
+  	{
+  		getNArguments(args, numArgs, 4, message, messagePosition, messageEnd);
+  		_PlayerSN = args[3];
+  		ConnectionEvent(EVENT_DEVICE_INFO);
+  	}
+  	else if(args[1] = msgNUM_ZONES)	//sanity check - ensure we've got a device that supports OSD
+  	{
+ 		getNArguments(args, numArgs, 4, message, messagePosition, messageEnd);
+ 		
+ 		_NumVidZones = atoi(args[2]);
+ 		_NumAudZones = atoi(args[3]); 
+ 		
+ 		if( validateDevice(_ModuleShortDescription, Stated_Player_ID, _DeviceName, _numVidZones, _numAudZones, 0) )
+ 			ConnectionEvent(EVENT_VALIDATED_CONFIG);
+  	}
+  	else if(args[1] = msgDEVICE_TYPE_NAME)
+  	{
+  		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+  		_DeviceName = args[2];
+  	}  	  	
+	else if(args[1] = msgDEVICE_POWER_STATE)
+	{
+  		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+  		
+  		//print("power state args[2]=%s.  atoi(args[2]=%d\n", args[2], atoi(args[2]));
+  		
+  		if(byte(args[2],1) != '0')
+  			ConnectionEvent(EVENT_POWER_STATE_ON);
+  		else
+  			ConnectionEvent(EVENT_POWER_STATE_OFF);
+  		
+	}
+	else if(args[1] = msgPROTOCOL)
+	{
+		getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+		
+		Protocol_Version = atoi(args[2]); //indicate the protocol version number
+		
+		if(Protocol_Version < 5)
+		{
+			Movies_Available = ON;
+			Music_Available = OFF;
+		}
+		else
+		{
+			/*
+			 * this should query the capabilities of the system.  
+			 * For now, we'll assume both movies and music are available
+			 */
+			Movies_Available = ON;
+			Music_Available = ON;
+		}
+	}	
+	else if(args[1] = msgUSER_INPUT)
+	{
+		getNArguments(args, numArgs, 5, message, messagePosition, messageEnd);
+		
+		User_Input = atoi(args[2]); //1=keyboard, 2=keypad		
+		User_Input_Prompt$ = nullToSpace(args[3]); //the current prompt		
+		User_Input_Text$ = nullToSpace(args[4]); //text that the user has typed
+	}	           
+	else if(args[1] = msgCAMERA_ANGLE)
+	{
+		getNArguments(args, numArgs, 5, message, messagePosition, messageEnd);
+	
+		Current_Camera_Angle = atoi(args[2]);
+		Num_Camera_Angles = atoi(args[3]);
+		                
+		if(byte(args[4],1) = '0')
+		{
+			Camera_Angles_Available = OFF;
+		}
+		else
+		{
+			Camera_Angles_Available = ON;
+		}
+	}
+    else if(args[1] = msgVIDEO_MODE)
+    {
+        getNArguments(args, numArgs, 5, message, messagePosition, messageEnd);
+    	
+    	Video_Mode_Composite = atoi(args[2]);
+    	Video_Mode_Component = atoi(args[3]);
+    	Video_Mode_HDMI = atoi(args[4]);
+    }
+    else if(args[1] = msgUSER_DEFINED_EVENT)
+    {
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+    
+
+		  	if(args[2] = msgVOLUME_UP_PRESS)
+			{
+					Volume_Up = 1;
+
+						Volume_Down = 0;				//Stop any volume ramping operations that may be going on
+			}
+			else if(args[2] = msgVOLUME_UP_RELEASE)
+			{
+					Volume_Up = 0;	
+
+						Volume_Down = 0;				//Stop any volume ramping operations that may be going on
+			}
+			else if(args[2] = msgVOLUME_UP)
+			{
+				PULSE(5, Volume_Up);
+
+						Volume_Down = 0;				//Stop any volume ramping operations that may be going on
+				}     
+			else if(args[2] = msgVOLUME_DOWN_PRESS)
+			{
+					Volume_Down = 1;	
+
+						Volume_Up = 0;					//Stop any volume ramping operations that may be going on
+			}
+			else if(args[2] = msgVOLUME_DOWN_RELEASE)
+			{
+					Volume_Down = 0;	
+
+						Volume_Up = 0;					//Stop any volume ramping operations that may be going on
+			}
+			else if(args[2] = msgVOLUME_DOWN)
+			{
+				PULSE(1, Volume_Down);
+
+						Volume_Up = 0;					//Stop any volume ramping operations that may be going on
+				}
+			else if(args[2] = msgTOGGLE_MUTE)
+			{
+				PULSE(1, Volume_Mute);
+
+						Volume_Up = 0;					//Stop any volume ramping operations that may be going on
+						Volume_Down = 0;
+				}
+			else
+			{
+		    	User_Defined_Event$ = args[2];
+			}
+
+    	delay(1);
+    	User_Defined_Event$ = NULLSTRING;
+    }
+    else if(args[1] = msgFRIENDLY_NAME)
+    {
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+    	
+    	Friendly_Name$ = args[2];
+    }
+    else if(args[1] = msgCONTROLLED_ZONE)
+    {
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+    	
+    	if(_MusicControlSN$ != mid(args[2],2,12))					//if this isn't the control we thought we were getting
+    	{
+    		_MusicControlCPDID$ = NULLSTRING;								//clear the stored (probably invalid) CPDID
+    	}
+    	
+   		_MusicControlSN$ = mid(args[2], 2, 12);						//set the SN
+   		_MusicControlZone$ = mid(args[2], 15,2);					//and the zone
+    		
+   		if(_MusicControlSN$ = right(_PlayerSN,12))					//if this is our own player
+   		{
+   			makestring(_MusicControlCPDID$, "%02d", Stated_Player_ID);	//us our stated CPDID		
+   		}
+   		
+		makestring(Controlled_Music_SN_Zone$, "%s.%s", _MusicControlSN$, _MusicControlZone$);
+		
+   		if(_MusicControlCPDID$ = NULLSTRING)								//if we don't know the CPDID
+   		{
+   			makestring(Tx$, "#%s/0/GET_DEVICE_INFO:\n", _MusicControlSN$);	//ask about the CPDID
+   		}
+   		else														//otherwise, set the feedback
+   		{
+   			makestring(Controlled_Music_CPDID_Zone$, "%s.%s", _MusicControlCPDID$, _MusicControlZone$);
+   		}
+   		
+    }
+    else if(args[1] = msgHIGHLIGHTED_SELECTION)
+    {
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);
+    	
+    	Details_Visible = OFF; //Turn off the details visible selection.
+    	if(isSignalDefined(Details_Text$) 		|| //if the details signals aren't used
+    	   isSignalDefined(Details_Title$) ||
+    	   isSignalDefined(Details_Cover_URL$) 	)
+    	{
+    		if(args[2] != NULLSTRING)//if there's data in the second field
+    		{
+    			requestBrowseDetails(args[2]); //retrieve the content details
+				_handle = args[2];
+	    	}
+	    }
+    }
+    else if(args[1] = msgCONTENT_DETAILS_OVERVIEW)
+    {
+	    getNArguments(args, numArgs, 5, message, messagePosition, messageEnd);
+    	if(_BrowseDetailsLoading)
+    	{    	
+			Details_Text$ = TPNULLSTRING; //clear the field for more data
+			_ContentDetail.numDetailsExpected = atoi(args[2]);
+			_ContentDetail.library = args[4];
+		
+			//Clear all remaining fields
+			_ContentDetail.title = NULLSTRING;
+			_ContentDetail.albumTitle = NULLSTRING;
+			_ContentDetail.performer = NULLSTRING;
+			_ContentDetail.composer = NULLSTRING;
+			_ContentDetail.genre = NULLSTRING;
+			_ContentDetail.year = NULLSTRING;
+			_ContentDetail.coverURL = NULLSTRING;
+			_ContentDetail.runningTime = NULLSTRING;
+			_ContentDetail.rating = NULLSTRING;
+			_ContentDetail.ratingReason = NULLSTRING;
+			_ContentDetail.albumContentHandle = NULLSTRING;		
+			_ContentDetail.synopsis = NULLSTRING;
+			_ContentDetail.discLocation = NULLSTRING;
+			Details_Visible = OFF; //hide the window
+		}
+		else if(_NowPlayingDetailsLoading)
+		{
+			_NumberOfDetails = atoi(args[2]);
+		}
+	}
+    else if(args[1] = msgCONTENT_DETAILS) //if this is a detail
+    {    	
+    	getNArguments(args, numArgs, 5, message, messagePosition, messageEnd);  
+    	receiveContentDetail(args);
+    }
+	else if(args[1] = msgSYSTEM_READINESS)
+	{
+    	getNArguments(args, numArgs, 3, message, messagePosition, messageEnd);  
+    	System_Readiness_State = atoi(args[2]);
+	}
+	else if(args[1] = msgDISC_IN_TRAY_SELECTION) //if this is a detail
+    {    	
+				/*
+				 *	DISC_IN_TRAY_SELECTION:handle:media type:import allowed:already imported:importing:
+				 */
+    	getNArguments(args, numArgs, 7, message, messagePosition, messageEnd);
+
+		Disc_In_Tray_Media_Type = atoi(args[3]);
+		Disc_In_Tray_Ok_to_Import = atoi(args[4]);
+		Disc_In_Tray_Imported = atoi(args[5]);
+		Disc_In_Tray_Importing = atoi(args[6]);
+
+		Show_Disc_In_Tray_button = 0 < atoi(args[3]);
+    }
+}
+
+
+FUNCTION processRx()
+{
+	STRING message[MAX_MESSAGE_LENGTH];	// temporary variable to hold individual message
+	STRING  args[MAX_RESPONSE_ARGS][MAX_RESPONSE_ARG_LEN]; // the args within the message.  Defined here to speed up processing.
+	INTEGER loop;
+	   
+    while(1)
+    {
+    	message = gather(_Delimiters[_CurrentDelimiter], Rx$);
+    	_FoundDelimiter = _FoundDelimiter + 1;
+    	
+    	//clear the args before passing into the message parse
+    	for(loop= 0 to MAX_RESPONSE_ARGS)
+    	{
+    		args[loop] = "";
+    	}
+    	
+    	parseMessage(message, args);
+    }
+}
+
+/*******************************************************************************************
+ * Event Handlers
+ ******************************************************************************************/
+CHANGE Rx$ 
+{
+	//ensure only 1 thread at a time    
+    if(_ParsingFlag) TerminateEvent;
+    _ParsingFlag = ON;
+	processRx();
+	_ParsingFlag = OFF;
+}
+
+
+CHANGE Command_To_Player$
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	
+	command = Command_To_Player$ + ":";	//can't pass the STRING_INPUT by reference
+	send(command);
+}
+              
+              
+CHANGE Keyboard_Input$
+{
+	INTEGER key;
+	STRING 	escapeString[1];
+	STRING 	command[MAX_MESSAGE_LENGTH];
+	
+	while(len(Keyboard_Input$)) //step through all input on this serial line
+	{
+		key = getC(Keyboard_Input$); //pull out 1 char at a time
+		escapeString = NULLSTRING; //reset the escape string
+		if((key = BACKSLASH) || //if the key needs to be escaped
+		   (key = ':') ||
+		   (key = '/') )
+		{
+			escapeString = chr(BACKSLASH); //set the escape string
+		}
+		
+		//build the keyboard string
+		makeString(command, "KEYBOARD_CHARACTER:%s%c:", escapeString, key);	
+		send(command); //send the command
+	}
+}
+    
+/*
+ * The general concept of the touch interface is that the player only needs to coordinates of the 
+ * selected area.  Since the same touch panel will provide the three events (X, Y, and Press) 
+ * in various orders arriving at various times, the following code turns these three events into 
+ * a single POSITION_SELECT.
+ *
+ * We are given 3 events:  Touch_Channel press, Touch_X change and Touch_Y change.
+ *
+ * Touch_X maintains _TouchXChanged, sets it to > 0 if Touch_X data is fresh, and sets it to 0 if 
+ * Touch_X data becomes old.
+ *
+ * Touch_Y maintains _TouchYChanged, sets it to >0 if Touch_Y data is fresh, and sets it to 0 if 
+ * Touch_Y data becomes old.
+ *
+ * Touch_Channel waits for valid Touch_X and Touch_Y data (as reported by the Touch_?_Changed
+ * variables) then sends the POSITION_SELECT command.
+ *
+ *
+ * The Touch_X and Touch_Y change events maintain the global variables _TouchXChanged and 
+ * _TouchYChanged.  These variables increment on each trigger of the event.  Each re-entrant
+ * change event waits for 2/10 of a second and checks to see if their my_change value is 
+ * equal to the global variable, and if it is, they expire the global variable by setting 
+ * it to 0.  This allows the Touch_Channel press event to monitor the global variables to 
+ * determine that fresh data is available in Touch_X and Touch_Y, and to wait if it isn't 
+ *available.
+ */
+ 
+RELEASE Touch_Channel
+{
+	delay(100);	//wait 10 seconds after the release to decrement the flag
+	_TouchPressed = _TouchPressed - 1;
+}
+
+PUSH Touch_Channel
+{
+	INTEGER timeout;
+	STRING 	command[MAX_MESSAGE_LENGTH];
+	
+	if(_Debug)
+	{
+		print("(%s) Received Push.  X_Change = %d, Y_Change = %d, X:%u, Y:%u\n", _SymbolInstance,
+			_TouchXChanged, _TouchYChanged, Touch_X, Touch_Y);
+	}
+	
+	_TouchPressed = _TouchPressed + 1;
+	
+	timeout = 0;
+	delay(1);
+
+	//if we don't have changed coords
+	while( ( _TouchXChanged = 0 || _TouchYChanged = 0 ) && timeout < XY_TIMEOUT )
+	{
+		delay(1); //pause a split second to ensure we have good XY coords
+		timeout = timeout + 1; //count up the timeout
+	}
+		
+	if(_Debug)
+	{		
+		print("(%s) Sending Push.  X_Change = %d, Y_Change = %d, X:%u, Y:%u (timeout=%d)\n", _SymbolInstance,
+			_TouchXChanged, _TouchYChanged, Touch_X, Touch_Y,timeout);
+	}
+	
+	if(_TouchXChanged = 0)
+	{
+		print("Kaleidescape (%s) OSD Module Error.  Touch press timeout with no touch coordinate X.\n", _SymbolInstance);
+		print("Check the signal path from the video window to the module.\n");
+	}
+		
+	if(_TouchYChanged = 0)
+	{
+		print("Kaleidescape (%s) OSD Module Error.  Touch press timeout with no touch coordinate Y.\n", _SymbolInstance);
+		print("Check the signal path from the video window to the module.\n");
+	}
+	
+	makeString( command, "POSITION_SELECT:%u:%u:", Touch_X, Touch_Y ); //create the command
+	send(command); //send the command
+}
+	
+//set these flags when the level data changes
+CHANGE Touch_X
+{
+	INTEGER myChange;
+	
+	if(_Debug) print("(%s) Received X:%u\n",_SymbolInstance, Touch_X);
+	
+	_TouchXChanged = _TouchXChanged + 1; //increment the flag
+	if(_TouchXChanged > 65530) _TouchXChanged = 1; //if we close to rolling, set back to 1
+	
+	myChange = _TouchXChanged; //remember where we left it
+	delay(XY_TIMEOUT); //pause for timeout
+	if(myChange = _TouchXChanged) //if the last change was ours
+	{
+		_TouchXChanged = 0; //expire it!
+		
+		if(_Debug) print("(%s) X expired.  my_change=%d\n", _SymbolInstance, myChange);
+			
+		if(_TouchPressed = 0)
+		{
+			print("Kaleidescape (%s) OSD Module Error.  Received X Change from video window, but did not receive the digital event.\nCheck the signal path from the video window to the module.\n", _SymbolInstance);
+		}
+	}
+}
+	
+CHANGE Touch_Y
+{
+	INTEGER myChange;
+	
+	if(_Debug) print("(%s) Received Y:%u\n",_SymbolInstance,Touch_Y);
+	
+	_TouchYChanged = _TouchYChanged + 1;//increment the flag
+	if(_TouchYChanged > 65530) _TouchYChanged = 1; //if we close to rolling, set back to 1
+	
+	myChange = _TouchYChanged; //remember where we left it
+	delay(XY_TIMEOUT); //pause for timeout
+	if(myChange = _TouchYChanged) //if the last change was ours
+	{
+		_TouchYChanged = 0; //expire it!
+		
+		if(_Debug) print("(%s) Y expired.  my_change=%d\n", _SymbolInstance, myChange);
+		if(_TouchPressed = 0)
+		{
+			print("Kaleidescape (%s) OSD Module Error.  Received Y Change from video window, but did", _SymbolInstance);
+			print(" not receive the digital event.\nCheck the signal path from the video window");
+			print(" to the module.\n");
+		}
+	}
+}	
+	
+CHANGE Play_Script$
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	
+	if(Play_Script$ != NULLSTRING) //if the name is not null
+	{
+		command = Play_Script$;
+		command = escape(command); //escape the script name
+		command = "PLAY_SCRIPT:" + command + ":"; //build the command
+		send(command); //send the built command
+		Play_Script$ = NULLSTRING; //blank the input to allow re-triggering the same name
+	}
+}	
+
+CHANGE Console_Command$
+{
+	STRING command[MAX_MESSAGE_LENGTH];
+	
+	command = upper(Console_Command$);
+	
+	if( command="K HELP" || command = "K?" || command="K ?" )
+	{
+		print("\n\nAll commands must be prefixed with userprogcmd.\n");
+		print("use \"K debug\" to start debugging and \"K stop debug\" to stop.\n");
+		print("\"K debug <device id>\" will start debugging only on the module using that device ID.\n");
+		print("use \"K ver\" to obtain the module version information.\n");
+		print("use \"K id\" to obtain the module device ID.\n");
+		print("use \"K stop\" to stop all playback.\n\n");
+	}
+		
+	if( command="K DEBUG"	|| 
+	    ( left(command, 8)= "K DEBUG " && atoi(right(command, 2)) = _PlayerId ) )
+	{
+		print("Enabling Kaleidescape module debugging output for symbol %s\n", _SymbolInstance);
+		print("%s\n", _ModuleDescription);
+		_Debug = ON;
+	}
+		
+	if( command="K STOP DEBUG" || command="K NO DEBUG" || command="K DEBUG STOP" ) 
+	{		
+		print("Disabling Kaleidescape module debugging output for symbol %s.\n", _SymbolInstance);
+		_Debug = OFF;
+	}
+		
+	if( command="K VER" || command="K VERSION" )
+	{
+		print("%s - Device ID %d, Symbol %s\n", _ModuleDescription, _PlayerId, _SymbolInstance);
+	}
+
+	if( command="K ID" )
+	{
+		print("(%s) Device ID %d\n", _SymbolInstance, _PlayerId);
+	}
+	
+	if( command="K STOP" )
+	{
+		send("STOP:");
+	}
+
+}
+	
+PUSH Connection_Open
+{
+	ConnectionEvent(EVENT_PORT_OPEN);
+}
+	
+RELEASE Connection_Open
+{
+	ConnectionEvent(EVENT_PORT_CLOSED);	
+}
+
+
+PUSH Power_On_Trigger
+{
+	ConnectionEvent(EVENT_POWER_ON_PUSH);
+}
+ 
+RELEASE Power_On_Trigger
+{
+	ConnectionEvent(EVENT_POWER_ON_RELEASE);
+}
+
+PUSH Power_Off_Trigger	//This is here to inform the S+ that we're asking for standby and to set the power state.
+{
+	ConnectionEvent(EVENT_POWER_OFF_PUSH);
+}
+
+PUSH Refresh_Details
+{
+	send("GET_HIGHLIGHTED_SELECTION:");
+}
+
+CHANGE Control_Music_Zone$
+{
+	INTEGER dot;
+	STRING target[30];
+	STRING zone[5];
+	
+	dot = find(".", Control_Music_Zone$);
+	if(dot)
+	{
+		target = mid(Control_Music_Zone$, 1, dot-1);
+		zone = mid(Control_Music_Zone$, dot+1, 2);
+		zone = "00" + zone;
+		zone = right(zone,2);							//ensure it's exactly 2 characters padded with "0"
+		
+		if(zone = "00") zone = "01";
+		_MusicControlZone$ = zone;
+	}
+	else	//falls here if we didn't find a zone seperator
+	{
+		target = Control_Music_Zone$;
+		_MusicControlZone$ = "01";
+	}
+	
+	
+	if(target = NULLSTRING || target = "01" || atoi(target) = Stated_Player_ID)		//if the zone requested was null or 01 or self
+	{
+		_MusicControlSN$ = right(_PlayerSN,12);
+		makestring(_MusicControlCPDID$, "%02d", Stated_Player_ID);
+	}
+	else if(len(target) > 2)		//if this is a serial number
+	{
+		target = "0000000000" + target;
+		_MusicControlSN$ = right(target, 12);			//ensure it's exactly 12 characters padded with "0"
+		_MusicControlCPDID$ = NULLSTRING;						//we don't know the CPDID yet
+	}
+	else												//this is likely a CPDID
+	{
+		target = "0" + target;
+		_MusicControlCPDID$ = right(target,2);			//ensure it's exactly two characters padded with "0"
+		_MusicControlSN$ = NULLSTRING;							//we don't know the SN yet
+	}
+	
+	setControlledZone();
+}
+
+/*******************************************************************************************
+ * Main()
+ ******************************************************************************************/
+FUNCTION Main()
+{
+	INTEGER lastDate;
+	INTEGER idleCount;
+	INTEGER lastFoundDelimiter;
+	INTEGER lastTxCount;
+	INTEGER lastRxEmpty;
+	SIGNED_INTEGER resizeStringStatus;
+	
+	STRING 	command[255];
+	STRING  otherDelimiter[2];
+
+	//_Debug = ON;	
+	_Debug = OFF;			
+	
+	_Delimiters[0] = "\x0A";	//printable (line-feed)
+	_Delimiters[1] = "\x04";	//binary
+	
+	_FieldDelimiter[0] = ":";	//printable
+	_FieldDelimiter[1] = "\x02";//binary
+	
+	initMessages();				//initialized all received messages
+	
+	_ContentDetail.title = NULLSTRING;
+	_ContentDetail.genre = NULLSTRING;
+
+	resizeStringStatus = resizeString(_SymbolInstance, len(getSymbolInstanceUMC()));
+	_SymbolInstance = getSymbolInstanceUMC();
+
+	if(_Debug || resizeStringStatus != 0)
+	{
+		print("%s, Resize string operation status=%s.", _SymbolInstance, itohex(resizeStringStatus));
+	}
+
+	_ModuleDescription = "Kaleidescape Player Crestron Module v8.4.0.  Mar 26, 2014 " 
+			+ " Library version " + getLibraryVersion();	
+	
+	_ModuleShortDescription = "OSD Module";		
+	
+	_ParsingFlag = OFF;
+	_TouchPressed = OFF;
+	
+	//Preset the parsing flags.
+	_BrowseDetailsPending = OFF;
+	_BrowseDetailsLoading = OFF;
+	_NowPlayingDetailsPending = OFF;
+	_NowPlayingDetailsLoading = OFF;
+	
+	
+    waitForInitializationComplete();
+    
+    delay(500); //wait an additional few seconds for ALL logic to be done propogating
+    
+    print("%s - Device ID %d, Symbol %s\n",_ModuleDescription, _PlayerId, _SymbolInstance);
+    
+    ConnectionEvent(EVENT_MODULE_START);
+    
+    //wait an additional random amount of time to prevent all modules init'ing at once
+    delay(random(0,300));
+	
+	if(Connection_Open)	//if connection is already open (event may not have triggered)
+	{
+		ConnectionEvent(EVENT_PORT_OPEN);
+	}
+	
+	if(Power_On_Trigger)
+	{
+		ConnectionEvent(EVENT_POWER_ON_PUSH);
+	}
+	
+	
+	
+	while(1)
+	{
+		delay(200); //every other second
+		idleCount = idleCount + 2;
+		
+		if( (idleCount % 10) = 0)  //every 10 seconds
+		{
+			ConnectionEvent(EVENT_10_SECONDS);
+		}
+		
+		if(idleCount >= 30)
+		{
+			idleCount = 0;
+			ConnectionEvent(EVERY_30_SECONDS);
+		}
+
+		if( lastDate != GetDateNum() ) //check if the day has changed
+		{
+			lastDate = GetDateNum(); //store the last date
+			ConnectionEvent(EVENT_MIDNIGHT);
+		}			
+		
+		//if we haven't found any delimiters in this or the last time slice
+		if( !lastFoundDelimiter && !_FoundDelimiter )
+		{
+			// if there's been a TX in the last slice (over 2 seconds ago)
+			if (lastTxCount > 0)
+			{
+				if( Rx$ = NULLSTRING )	//if the buffer is still empty
+				{
+					ConnectionEvent(EVENT_SEND_TIMEOUT);
+				}
+			}
+			
+			// if there's data lingering in the buffer without a delimiter
+			if( !LastRxEmpty && ( Rx$ != NULLSTRING ) )
+			{
+				if( find( _Delimiters[!_CurrentDelimiter], Rx$ ) )  //otherDelimiter, Rx$ ) )
+				{
+					//if the other delimiter is found, toggle the flag and ping with a generic message
+					if(_Debug) print("(%s) Found other delimiter in receive buffer.  Switching delimiters.  _CurrentDelimiter = %d\n", _SymbolInstance, _CurrentDelimiter);
+					
+					switchDelimiters(!_CurrentDelimiter);
+					//_CurrentDelimiter = !_CurrentDelimiter;
+					//send("GET_DEVICE_POWER_STATE:");
+				}
+				else
+				{
+					//if we're here, the buffer contains unrecognized data.
+					if(_Debug) print("(%s) Garbage in receive buffer, clearing:  %s\n", _SymbolInstance, Rx$);
+					ClearBuffer(Rx$);
+				}
+			}
+		}
+		
+		// set the variables for the next go-round
+		lastFoundDelimiter = _FoundDelimiter;
+		_FoundDelimiter = _FoundDelimiter - lastFoundDelimiter; //to ensure this number is correct even if interrupted by a thread operation
+		
+		lastTxCount = _TxCount;
+		_TxCount = _TxCount - lastTxCount;
+		
+		if( Rx$ = NULLSTRING ) LastRxEmpty = ON;
+		else lastRxEmpty = OFF;
+	}
+	
+}
+
+
